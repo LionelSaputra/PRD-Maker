@@ -148,9 +148,13 @@ const server = http.createServer(async (req, res) => {
       const taskShort = parts[parts.length - 1];
       const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(wsId);
       if (!ws) return sendJson(res, 404, { error: 'Workspace not found' });
+      // Token wajib ada dan cocok. Sebelumnya header yang tidak dikirim sama
+      // sekali lolos begitu saja, sehingga siapa pun bisa mengubah status task
+      // tanpa autentikasi.
       const auth = req.headers.authorization || '';
-      if (auth.startsWith('Bearer ') && auth.slice(7) !== ws.token) {
-        return sendJson(res, 401, { error: 'Invalid token' });
+      const provided = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+      if (!provided || provided !== ws.token) {
+        return sendJson(res, 401, { error: 'Missing or invalid token' });
       }
       const body = await parseJsonBody(req);
       const allowed = ['todo', 'in_progress', 'done', 'failed'];

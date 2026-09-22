@@ -34,13 +34,21 @@ async function runTests() {
     const genData = await genRes.json();
     assert.ok(genData.workspace.id);
     assert.ok(genData.workspace.token);
-    assert.ok(genData.tasks.length > 0);
+    assert.ok(genData.totalTasks > 0, 'expected at least one generated task');
     console.log(' -> Generated Workspace ID:', genData.workspace.id);
-    console.log(' -> Tasks Count:', genData.tasks.length);
+    console.log(' -> Tasks Count:', genData.totalTasks);
 
     const wsId = genData.workspace.id;
     const token = genData.workspace.token;
-    const taskId = genData.tasks[0].id;
+
+    // Ambil task pertama lewat endpoint workspace, karena respons generate
+    // hanya mengembalikan jumlah task (totalTasks), bukan daftarnya.
+    const detailRes = await fetch(`http://127.0.0.1:${PORT}/api/v1/workspaces/${wsId}`);
+    assert.strictEqual(detailRes.status, 200);
+    const detailData = await detailRes.json();
+    assert.ok(Array.isArray(detailData.tasks) && detailData.tasks.length > 0);
+    const taskId = detailData.tasks[0].id;
+    console.log(' -> First Task ID:', taskId);
 
     // 2. Test Unauthorized Task Update
     console.log('[Test 2] Testing Unauthorized Update...');
