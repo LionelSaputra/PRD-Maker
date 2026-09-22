@@ -1,0 +1,17 @@
+{
+  "name": "prd-maker",
+  "version": "1.0.0",
+  "description": "Turn a raw app idea into a technical PRD and an executable task breakdown, with a CLI that reports progress back to the dashboard",
+  "main": "server.js",
+  "type": "module",
+  "bin": {
+    "prdmaker": "./bin/cli.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tests/test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1"
+  }
+}
