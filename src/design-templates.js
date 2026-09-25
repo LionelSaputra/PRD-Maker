@@ -187,6 +187,27 @@ export const MOTION_RULES = [
   'Pakai CSS transition untuk elemen yang sering dipicu (bisa dibatalkan di tengah); keyframes untuk animasi sekali jalan.'
 ];
 
+// Aturan dari skill `impeccable` (reference/craft-floor.md + craft mechanics).
+// Ini pemeriksaan mekanis pada hasil akhir, bukan arahan rasa.
+export const IMPECCABLE_RULES = [
+  'Permukaan browser wajib ikut didesain: warna seleksi teks (::selection), caret (caret-color), scrollbar (scrollbar-color), focus ring (:focus-visible), dan underline-offset. Ini tanda paling murah bahwa halaman benar-benar dibangun, bukan disusun asal.',
+  'Angka pada tabel/metrik wajib pakai font-variant-numeric: tabular-nums supaya tidak bergeser saat nilainya berubah.',
+  'Kontras: teks isi dan placeholder minimal 4.5:1; teks besar minimal 3:1. Teks sekunder di atas bidang berwarna diturunkan dari warna bidang itu, jangan abu-abu netral.',
+  'Bayangan wajib punya offset dan blur lembut. Halo berwarna tanpa offset itu hiasan, bukan kedalaman.',
+  'Jarak: kelompok yang dekat dirapatkan, antar bagian diberi ruang lega, dan jarak DI ATAS judul harus lebih besar daripada di bawahnya.',
+  'Tipografi: lebar baris isi 65-75 karakter, ukuran display maksimal 6rem, letter-spacing paling rapat -0.04em, dan langkah ukuran/bobot harus jelas terlihat.',
+  'Motion: satu momen animasi yang disengaja, bukan efek tersebar dan bukan animasi masuk yang sama persis di setiap bagian. Pakai exponential ease-out, mulai dari keadaan yang sudah terlihat.',
+  'Keadaan wajib lengkap: hover, disabled, loading, error, empty. Plus konten nyata, kontrol yang benar-benar bekerja, susunan responsif, dan focus keyboard.',
+  'DILARANG gradien teks. Penekanan datang dari bobot atau ukuran.',
+  'DILARANG kaca/blur sebagai hiasan; blur hanya untuk efek yang jelas tujuannya.',
+  'DILARANG border-left/border-right berwarna di atas 1px pada kartu, item daftar, atau peringatan.',
+  'DILARANG bayangan offset keras (mis. box-shadow: 4px 4px 0) kecuali gaya neobrutalis yang memang dipilih sadar.',
+  'DILARANG monospace sebagai kostum "terkesan teknis". Monospace hanya untuk kode, data, atau angka ukuran.',
+  'DILARANG label kecil (kicker/eyebrow) di atas judul. Judul harus berdiri sendiri.',
+  'DILARANG kartu berukuran sama berisi ikon + judul + teks sebagai struktur halaman. Kartu adalah wadah malas, dan kartu bersarang selalu salah.',
+  'DILARANG nomor bagian (01/02/03) kecuali urutannya memang membawa informasi yang dibutuhkan pembaca.'
+];
+
 export const ANTI_GENERIC_RULES = [
   'DILARANG memakai emoji sebagai ikon. Pakai ikon SVG (mis. lucide) dengan ukuran 16/20/24px dan stroke 1.5-2px.',
   'DILARANG memakai gradien sebagai latar utama. Gradien hanya boleh untuk aksen kecil, maksimal satu.',
@@ -225,6 +246,9 @@ ${lines}
 
 === ATURAN MOTION (WAJIB) ===
 ${MOTION_RULES.map(r => '- ' + r).join('\n')}
+
+=== TINGKAT KERAJINAN WAJIB (dari skill impeccable, diperiksa) ===
+${IMPECCABLE_RULES.map(r => '- ' + r).join('\n')}
 
 === ATURAN ANTI-GENERIK (WAJIB, DIPERIKSA) ===
 ${ANTI_GENERIC_RULES.map(r => '- ' + r).join('\n')}
