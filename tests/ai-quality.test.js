@@ -111,6 +111,42 @@ try {
     assert.match(calls[3].body.messages[0].content, /(?:CLI|bot|API|library).*(?:tanpa UI|tanpa antarmuka)/iu);
   });
 
+  await test('a stage answered with the previous stage shape is retried, not trusted', async () => {
+    process.env.PRDMAKER_API_KEY = 'offline-test-key';
+    process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
+    process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
+    process.env.PRDMAKER_CONFIG = '/does/not/exist';
+    // Tahap rincian dibalas dengan bentuk tahap stack: kunci hilang meski HTTP 200.
+    const calls = mockQueue([
+      identityOf(uiSkeleton),
+      coreOf(uiSkeleton),
+      coreOf(uiSkeleton),
+      detailOf(uiSkeleton),
+      { tasks: uiTasks }
+    ]);
+    const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
+    assert.deepEqual(result.features.map(f => f.module), uiSkeleton.features.map(f => f.module));
+    assert.equal(calls.length, 5);
+    assert.match(calls[3].body.messages[1].content, /Ulangi khusus tahap rincian/);
+  });
+
+  await test('a permanently shape-wrong stage names the missing fields and blames the model', async () => {
+    process.env.PRDMAKER_API_KEY = 'offline-test-key';
+    process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
+    process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
+    process.env.PRDMAKER_CONFIG = '/does/not/exist';
+    mockQueue([
+      identityOf(uiSkeleton),
+      coreOf(uiSkeleton),
+      coreOf(uiSkeleton),
+      coreOf(uiSkeleton)
+    ]);
+    await assert.rejects(
+      () => generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra'),
+      /kelemahan model, bukan kesalahan Anda/
+    );
+  });
+
   await test('truncated output is retried as a token-budget problem, not blamed on the model', async () => {
     process.env.PRDMAKER_API_KEY = 'offline-test-key';
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
@@ -243,11 +279,11 @@ try {
     process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
     process.env.PRDMAKER_CONFIG = '/does/not/exist';
 
-    const badSkeleton = structuredClone(uiSkeleton);
-    delete badSkeleton.features;
     const badTasks = structuredClone(uiTasks);
     badTasks[0].spec = `Tujuan: Siapkan penyimpanan letters.\nFile: src/db.js.\nDependensi: tidak ada\nImplementasi: Buat tabel letters dengan constraint nomor unik.`;
-    const badDetail = { features: undefined, databaseSchema: [], apiEndpoints: [] };
+    // Kunci lengkap tapi isinya tidak lolos validator, supaya yang diuji adalah
+    // jalur perbaikan validator, bukan pengulangan karena bentuk salah.
+    const badDetail = { features: [], databaseSchema: [], apiEndpoints: [] };
     const calls = mockQueue([
       identityOf(uiSkeleton), coreOf(uiSkeleton), badDetail, detailOf(uiSkeleton),
       { tasks: badTasks }, { tasks: uiTasks }
@@ -269,6 +305,34 @@ try {
     await generatePRDFromPrompt('CLI impor CSV', 'CLI', noUI, 'oa/gpt-6-astra');
     assert.match(calls[1].body.messages[0].content, /jangan menambahkan frontend, login, atau Design System/i);
     assert.match(calls[3].body.messages[0].content, /tidak boleh mendapat task frontend, login, atau design system/i);
+  });
+
+  await test('validation treats "no frontend framework" as still needing a UI', () => {
+    // Regresi nyata: aplikasi web yang menolak framework (bukan menolak UI)
+    // pernah dibaca sebagai produk tanpa antarmuka, lalu Design System ditolak.
+    const webapp = structuredClone(uiSkeleton);
+    webapp.summary = 'Aplikasi web internal dengan antarmuka untuk 5 petugas dan 500 surat per bulan. Di luar lingkup: unggah berkas.';
+    webapp.architectureOverview = 'Keputusan teknologi: Node.js server-rendered HTML, bukan SPA. Aplikasi web dengan antarmuka, jadi tidak ada frontend framework. Alternatif React ditolak. HTTPS dan validasi input wajib.';
+    const problems = validatePRD(webapp, 'skeleton');
+    assert.ok(!problems.some(p => /tanpa antarmuka/i.test(p)), JSON.stringify(problems));
+    assert.ok(!problems.some(p => /tidak ada modul Design System/i.test(p)), JSON.stringify(problems));
+  });
+
+  await test('validation catches foreign-script and repeated-token corruption in prose', () => {
+    for (const bad of [' yang做 hal sama', ' zapuselageUEUEUEUEUEUE', ' UEUEUEUEUEUEUE']) {
+      const prd = { ...uiSkeleton, summary: uiSkeleton.summary + bad };
+      assert.ok(validatePRD(prd, 'skeleton').some(p => /terputus atau rusak/i.test(p)), JSON.stringify(bad));
+    }
+    // Teks Indonesia normal tidak boleh ikut tertandai.
+    assert.ok(!validatePRD(uiSkeleton, 'skeleton').some(p => /terputus atau rusak/i.test(p)));
+  });
+
+  await test('validation accepts "di luar aplikasi" as an out-of-scope statement', () => {
+    const prd = structuredClone(uiSkeleton);
+    prd.summary = 'Arsip surat untuk 5 petugas, 500 surat per bulan. Tujuan: pencarian cepat.';
+    prd.architectureOverview = 'Keputusan teknologi: Node.js dan SQLite untuk 5 petugas; PostgreSQL ditolak karena belum perlu. HTTPS dan validasi input. ';
+    prd.architectureOverview += 'Lingkup di luar aplikasi: pemrosesan email masuk dan integrasi sistem luar.';
+    assert.ok(!validatePRD(prd, 'skeleton').some(p => /batas lingkup/i.test(p)));
   });
 
   await test('validation rejects empty dependency, non-path file label, and missing done criteria', () => {

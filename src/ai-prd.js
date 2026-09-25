@@ -155,6 +155,10 @@ function routerErrorMessage(raw, action) {
   if (/content kosong|tidak mengembalikan isi jawaban/i.test(text)) {
     return `Gagal ${action}: model tidak mengirim isi jawaban sama sekali. Coba lagi, atau pilih model lain di pemilih model.`;
   }
+  if (/tidak menghasilkan .* setelah dua percobaan/i.test(text)) {
+    return `Gagal ${action}: model ini menjawab dengan bentuk yang salah tahap dan tidak menghasilkan bagian yang dibutuhkan. ` +
+      'Ini kelemahan model, bukan kesalahan Anda: pilih model lain di pemilih model, lalu coba lagi.';
+  }
   if (/format yang tidak dikenali/i.test(text)) {
     return `Gagal ${action}: balasan dari layanan AI tidak bisa dibaca (format tidak dikenal). Coba lagi, atau pilih model lain.`;
   }
@@ -465,8 +469,25 @@ Keluarkan HANYA JSON murni tanpa markdown:
 
 function hasUIRequirement(prd) {
   const core = [prd.summary, prd.architectureOverview, ...(Array.isArray(prd.techStack) ? prd.techStack : [])].join(' ');
-  if (/(?:tanpa|tidak ada|tidak memakai|non)\s+(?:UI|antarmuka|frontend|web|browser)|(?:without|no)\s+(?:UI|interface|frontend|web)/i.test(core)) return false;
+  // Penolakan UI hanya berlaku untuk bentuk produknya, bukan untuk framework.
+  // "tidak ada frontend framework" pada aplikasi web TETAP butuh antarmuka.
+  const negative = /(?:tanpa|tidak ada|tidak memakai|non)\s+(?:UI|antarmuka|frontend|web|browser)|(?:without|no)\s+(?:UI|interface|frontend|web)/gi;
+  for (const match of core.matchAll(negative)) {
+    const after = core.slice(match.index + match[0].length, match.index + match[0].length + 24);
+    if (/^\s*(?:framework|javascript|js\b|library|build|bundler|toolchain|template|component)/i.test(after)) continue;
+    return false;
+  }
   return /antarmuka|\bUI\b|frontend|web app|website|browser|desktop app|sistem desain|design system|Next\.js|React Native|\breact\b|\bvue\b|\bsvelte\b|tailwind/i.test(core);
+}
+
+// Model gratis kadang mengeluarkan potongan kalimat dalam huruf lain (Cyrillic,
+// CJK, Arab) atau mengulang token. Teks seperti itu tidak layak masuk PRD, jadi
+// harus diperbaiki, bukan disimpan diam-diam.
+function corruptedText(text) {
+  const value = String(text || '');
+  if (/[\u0400-\u04FF\u4E00-\u9FFF\u0600-\u06FF\u3040-\u30FF]/.test(value)) return true;
+  // Pengulangan token pendek ("UEUEUEUEUEUE") atau kata panjang yang sama.
+  return /(\w{2,4})\1{3,}/.test(value) || /\b(\w{6,})\b(?:[^\w]{0,3}\1\b){1,}/.test(value);
 }
 
 function hasScaleEvidence(prd) {
@@ -477,7 +498,7 @@ function hasScaleEvidence(prd) {
 
 function hasOutOfScopeEvidence(prd) {
   const text = [prd.summary, prd.architectureOverview].join(' ');
-  return /di luar lingkup|tidak termasuk|tidak dikecualikan|bukan bagian|tanpa fitur|beyond scope|out[ -]of[ -]scope|excluded|exclude|does not include|tidak mencakup|tidakakui|\b(?:tidak|bukan)\b[^.]{0,80}\b(?:dalam|ke)\s+lingkup/i.test(text);
+  return /di luar (?:lingkup|aplikasi|scope)|tidak termasuk|tidak dikecualikan|bukan bagian|tanpa fitur|beyond scope|out[ -]of[ -]scope|excluded|exclude|does not include|tidak mencakup|\b(?:tidak|bukan)\b[^.]{0,80}\b(?:dalam|ke)\s+lingkup/i.test(text);
 }
 
 function hasSecurityEvidence(prd) {
@@ -539,6 +560,7 @@ export function validatePRD(prd, stage = 'full') {
   if (!features.length) problems.push('tidak ada modul fitur');
   if (summary.length < 80) problems.push('summary kosong/terlalu pendek');
   if (architecture.length < 80) problems.push('architectureOverview kosong/terlalu pendek');
+  if (corruptedText(summary) || corruptedText(architecture)) problems.push('teks terputus atau rusak (huruf asing/huruf berulang) di summary atau architectureOverview');
   if (!hasScaleEvidence(prd)) problems.push('summary/architecture tidak menjelaskan skala atau volume');
   if (!hasOutOfScopeEvidence(prd)) problems.push('ringkasan tidak menjelaskan batas lingkup');
   if (!hasSecurityEvidence(prd)) problems.push('arsitektur tidak memuat kontrol keamanan atau validasi input yang relevan');
@@ -797,7 +819,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
   }
 
   // Keluaran terpotong (finish_reason=length) bukan kesalahan model, tapi
-  // anggaran token. Satu percobaan ulang dengan instraksi memendekkan.
+  // anggaran token. Satu percobaan ulang dengan instrksi memendekkan.
   async function callWithTruncationRetry(system, prompt) {
     try {
       return await callRouter(routerCfg, chosenModel, system, prompt);
@@ -810,14 +832,41 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     }
   }
 
+  // Router gratis kadang menjawab tahap dengan bentuk tahap sebelumnya: kunci
+  // yang diminta tidak muncul padahal panggilannya sukses. Karena itu tiap
+  // tahap memeriksa kuncinya sendiri dan mengulang sekali kalau bentuknya salah.
+  // ponytail: hapus kalau router berhenti mengembalikan bentuk tahap lain.
+  async function callStage(label, system, prompt, requiredKeys) {
+    const attempt = async (suffix) => {
+      const out = await callWithTruncationRetry(system, prompt + suffix);
+      const missing = requiredKeys.filter((k) => out?.[k] === undefined);
+      if (missing.length) {
+        console.warn(`[AI-PRD] Tahap ${label} tidak mengembalikan ${missing.join(', ')}; mengulang.`);
+        return { out, missing };
+      }
+      return { out, missing: [] };
+    };
+    let { out, missing } = await attempt('');
+    if (missing.length) ({ out, missing } = await attempt(`\nUlangi khusus tahap ${label}: keluarkan hanya ${requiredKeys.join(', ')}.`));
+    if (missing.length) {
+      const err = new Error(`Tahap ${label} tidak menghasilkan ${missing.join(', ')} setelah dua percobaan.`);
+      err.code = 'stage_shape_missing';
+      err.missing = missing;
+      throw err;
+    }
+    return out;
+  }
+
   async function generateSkeleton() {
     // Tiga panggilan fokus: identitas, stack+arsitektur, fitur+DB+API.
     // Dipisah karena model gratis self-stop setelah ~2 kunci saat diminta semua
     // field sekaligus, dan 502 kalau prompt-nya dipangkas satu blok.
     console.log(`[AI-PRD] Tahap 1a/3 identitas via ${chosenModel}...`);
-    const identity = await callWithTruncationRetry(
+    const identity = await callStage(
+      'identitas',
       PRD_IDENTITY_SYSTEM_PROMPT,
-      userPrompt + '\nTulis identitas produk (projectName, tagline, summary) sekarang.'
+      userPrompt + '\nTulis identitas produk (projectName, tagline, summary) sekarang.',
+      ['projectName', 'tagline', 'summary']
     );
 
     const decided = {
@@ -829,33 +878,58 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       JSON.stringify(decided) + '\n';
 
     console.log(`[AI-PRD] Tahap 1b/3 stack & arsitektur via ${chosenModel}...`);
-    const core = await callWithTruncationRetry(
+    const core = await callStage(
+      'stack & arsitektur',
       // Kontrak desain + referensi arah hanya sekali, di panggilan yang menulis
       // arsitektur, bukan di tiap panggilan.
       PRD_CORE_SYSTEM_PROMPT + '\n' + designTemplatePromptBlock() + '\n' + getDesignGuidance(),
-      userPrompt + decidedText + '\nSusun techStack dan architectureOverview sekarang.'
+      userPrompt + decidedText + '\nSusun techStack dan architectureOverview sekarang.',
+      ['techStack', 'architectureOverview']
     );
 
     console.log(`[AI-PRD] Tahap 1c/3 fitur, DB & API via ${chosenModel}...`);
-    const detail = await callWithTruncationRetry(
+    const detail = await callStage(
+      'rincian',
       PRD_DETAIL_SYSTEM_PROMPT,
       userPrompt + decidedText +
       `\nStack yang ditetapkan (techStack): ${JSON.stringify(core.techStack)}\n` +
-      'Susun features, databaseSchema, dan apiEndpoints sekarang.'
+      'Susun features, databaseSchema, dan apiEndpoints sekarang.',
+      ['features', 'databaseSchema', 'apiEndpoints']
     );
 
     let skeleton = { ...identity, ...core, ...detail };
     let problems = validatePRD(skeleton, 'skeleton');
     if (problems.length) {
       console.warn(`[AI-PRD] Tahap 1 ditolak validator: ${problems.join('; ')}`);
-      const fixed = await callWithTruncationRetry(
-        PRD_DETAIL_SYSTEM_PROMPT,
-        userPrompt + decidedText +
-        `\nStack yang ditetapkan: ${JSON.stringify(core.techStack)}\n` +
-        `Perbaiki rincian berikut. Jangan mengubah identitas atau arsitektur.\n` +
-        `Masalah: ${problems.join('; ')}`
-      );
-      skeleton = { ...identity, ...core, ...fixed };
+      // Perbaikan harus menulis ulang tahap yang bermasalah. Sebelumnya semua
+      // masalah dilempar ke prompt rincian, sehingga summary/arsitektur yang
+      // rusak mustahil diperbaiki dan PRD selalu gagal.
+      const proseProblems = problems.filter(p => /summary|ringkasan|architectureOverview|arsitektur|techStack|skala|batas lingkup/i.test(p));
+      const detailProblems = problems.filter(p => !proseProblems.includes(p));
+
+      let prose = { summary: identity.summary, projectName: identity.projectName, tagline: identity.tagline, techStack: core.techStack, architectureOverview: core.architectureOverview };
+      if (proseProblems.length) {
+        const fixedProse = await callStage(
+          'perbaikan identitas & arsitektur',
+          PRD_IDENTITY_SYSTEM_PROMPT,
+          userPrompt + `\nPerbaiki identitas dan arsitektur produk ini. Tulis ulang summary, techStack, dan architectureOverview sampai bersih (tanpa huruf asing atau kata berulang). Masalah: ${proseProblems.join('; ')}`,
+          ['projectName', 'tagline', 'summary', 'techStack', 'architectureOverview']
+        );
+        prose = fixedProse;
+      }
+
+      let detailFixed = detail;
+      if (detailProblems.length) {
+        const fixed = await callWithTruncationRetry(
+          PRD_DETAIL_SYSTEM_PROMPT,
+          userPrompt + decidedText +
+          `\nStack yang ditetapkan: ${JSON.stringify(prose.techStack)}\n` +
+          `Perbaiki rincian berikut. Jangan mengubah identitas atau arsitektur.\n` +
+          `Masalah: ${detailProblems.join('; ')}`
+        );
+        detailFixed = { ...detail, ...fixed };
+      }
+      skeleton = { ...identity, ...prose, ...detailFixed };
       problems = validatePRD(skeleton, 'skeleton');
     }
     if (problems.length) throw validationError('kerangka PRD', problems);

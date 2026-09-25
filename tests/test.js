@@ -28,13 +28,18 @@ const ai = createServer(async (req,res) => {
   const identity = { projectName: skeleton.projectName, tagline: skeleton.tagline, summary: skeleton.summary };
   const core = { techStack: skeleton.techStack, architectureOverview: skeleton.architectureOverview };
   const detail = { features: skeleton.features, databaseSchema: skeleton.databaseSchema, apiEndpoints: skeleton.apiEndpoints };
-  let data = prompt.includes('Product Manager ramah') ? clarification
-    : prompt.includes('Head of Product & Lead Architect') ? change
-    : prompt.includes('tepat dua kunci') ? core
-    : prompt.includes('Lead Engineer') ? {tasks}
-    : prompt.includes('tepat tiga kunci') ? (prompt.includes('"features"') ? detail : identity)
-    : {tasks};
-  if (mode === 'invalid-prd') data = {tasks:[]};
+  // Urutan penting: prompt inti teknis juga menyebut "Lead Engineer", jadi
+  // pencocokan jumlah kunci harus mendahului cabang lain.
+  let data;
+  if (prompt.includes('Product Manager ramah')) data = clarification;
+  else if (prompt.includes('Head of Product & Lead Architect')) data = change;
+  else if (prompt.includes('tepat dua kunci')) data = core;
+  else if (prompt.includes('"features"')) data = detail;
+  else if (prompt.includes('"projectName"')) data = identity;
+  else data = {tasks};
+  // Mode invalid-prd membuat validator tahap 2 yang menolak, bukan bentuk tahap 1.
+  const isStageOne = /tepat dua kunci|"features"|"projectName"/.test(prompt);
+  if (mode === 'invalid-prd' && !isStageOne) data = {tasks:[]};
   if (mode === 'invalid-clarify') data = {questions:[null]};
   res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(data)}}]}));
 });
@@ -113,7 +118,8 @@ try {
   assert.equal((await request('/api/v1/workspaces')).data.workspaces.length,1);
   mode='provider-error'; const failed=await request('/api/v1/workspaces/generate','POST',{idea:'Provider down',model:'oa/gpt-6-astra'}); assert.equal(failed.status,500); assert.ok(!JSON.stringify(failed).includes('SECRET-SHOULD-NOT-LEAK')); mode='ok';
   assert.ok(seen.every(r=>r.model==='oa/gpt-6-astra'));
-  assert.ok(seen.filter(r=>r.messages[0].content.includes('Tugasmu tahap 1:')).every(r=>r.messages[0].content.includes('KONTRAK DESAIN ANTI AI-SLOP')));
+  // Kontrak desain menyatu di system prompt tahap arsitektur, tepat satu kali.
+  assert.ok(seen.filter(r => r.messages[0].content.includes('architectureOverview')).every(r => (r.messages[0].content.match(/KONTRAK DESAIN ANTI AI-SLOP/g) || []).length === 1));
   assert.equal((await request(path,'DELETE',undefined,false)).status,401);
   assert.equal((await request(path,'DELETE')).status,200);
   assert.equal((await request(path)).status,404);
