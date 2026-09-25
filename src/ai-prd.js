@@ -187,6 +187,27 @@ function routerErrorMessage(raw, action) {
   return `Gagal ${action}: layanan AI mengembalikan jawaban yang tidak valid. Coba lagi, atau ganti model di pemilih model.`;
 }
 
+// Escape karakter kontrol mentah (newline, tab, CR) yang muncul DI DALAM
+// string JSON. Di luar string karakter itu memang format, jadi harus
+// dibiarkan agar struktur JSON tetap sah.
+export function escapeRawControlChars(json) {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (const ch of String(json)) {
+    if (escaped) { out += ch; escaped = false; continue; }
+    if (ch === '\\') { out += ch; escaped = true; continue; }
+    if (ch === '"') { inString = !inString; out += ch; continue; }
+    if (inString) {
+      if (ch === '\n') { out += '\\n'; continue; }
+      if (ch === '\r') { out += '\\r'; continue; }
+      if (ch === '\t') { out += '\\t'; continue; }
+    }
+    out += ch;
+  }
+  return out;
+}
+
 export function extractJSON(raw) {
   if (!raw) return '{}';
   let str = raw.trim();
@@ -195,7 +216,12 @@ export function extractJSON(raw) {
   const firstOpen = str.indexOf('{');
   const lastClose = str.lastIndexOf('}');
   if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
-    return str.substring(firstOpen, lastClose + 1);
+    const slice = str.substring(firstOpen, lastClose + 1);
+    // Model gratis kadang menulis baris baru/tab MENTAH di dalam string JSON
+    // ("... satu proses\n  node:http ..."), sehingga JSON.parse menolak dengan
+    // "Bad control character in string literal". Isinya benar, hanya
+    // encoding-nya cacat: escape di dalam string, sisanya dibiarkan.
+    return escapeRawControlChars(slice);
   }
 
   // Jalur terakhir: sebagian model (mis. oa/deepseek-v4.1-flash-free) menjawab
@@ -673,7 +699,11 @@ function hasDoneEvidence(spec) {
 }
 
 function hasSemanticFailure(text) {
-  return /gagal|error|invalid|tidak valid|kosong|null|unknown|tidak dikenal|ditolak|terhenti|timeout|limit|penuh|duplikat|tidak sah|terlarang|edge|batas|fallback|rollback|recover|pulih|overflow|terpotong|terhalang|tidak dapat dikembalikan/i.test(text);
+  return /gagal|error|invalid|tidak valid|kosong|null|unknown|tidak dikenal|ditolak|terhenti|timeout|limit|penuh|duplikat|tidak sah|terlarang|edge|batas|fallback|rollback|recover|pulih|overflow|terpotong|terhalang|tidak dapat dikembalikan/i.test(text)
+    // Kode status error juga bukti alur gagal ("Petugas ... mendapat 403").
+    || /\b(?:4\d{2}|5\d{2})\b/.test(text)
+    // Pola negatif: "tidak bisa dipakai ulang", "tidak boleh diakses".
+    || /\btidak\s+(?:bisa|dapat|boleh|akan|pernah|berhasil)\b/i.test(text);
 }
 function taskDependencies(spec) {
   const line = spec.match(/(?:Dependensi|Prasyarat|dependsOn)\s*:\s*([^\n]+)/i)?.[1] || '';
