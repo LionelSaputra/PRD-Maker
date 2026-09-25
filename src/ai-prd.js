@@ -165,17 +165,57 @@ function routerErrorMessage(raw, action) {
   return `Gagal ${action}: layanan AI mengembalikan jawaban yang tidak valid. Coba lagi, atau ganti model di pemilih model.`;
 }
 
-function extractJSON(raw) {
+export function extractJSON(raw) {
   if (!raw) return '{}';
   let str = raw.trim();
   str = str.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-  
+
   const firstOpen = str.indexOf('{');
   const lastClose = str.lastIndexOf('}');
   if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
     return str.substring(firstOpen, lastClose + 1);
   }
+
+  // Jalur terakhir: sebagian model (mis. oa/deepseek-v4.1-flash-free) menjawab
+  // dengan heading Markdown, bukan JSON, padahal JSON mode diminta. Hanya satu
+  // bentuk yang ditangani — daftar task Markdown — karena itu satu-satunya
+  // tahap yang terukur jatuh ke prose. Bentuk lain tetap dilaporkan gagal
+  // supaya tidak ada penguraian tegas yang menyamar jadi data.
+  // ponytail: tambah bentuk lain hanya kalau ada contoh keluaran nyata.
+  const tasks = parseMarkdownTasks(str);
+  if (tasks.length) return JSON.stringify({ tasks });
+
   return str;
+}
+
+// "### T1.1 — Judul" atau "### TASK-01 — Judul" + bullet di bawahnya menjadi
+// satu task. Prioritas tidak ditebak; spec tetap memuat teks aslinya.
+function parseMarkdownTasks(text) {
+  const headings = [...text.matchAll(/^#{2,4}\s+((?:TASK|T)[-\w.]*)\s*[—–:-]?\s*(.*)$/gm)];
+  const tasks = [];
+  // Modul diambil HANYA dari heading level 2 (##), karena heading task
+  // ("### T1.1 — ...") juga berlevel 3 dan sempat tertangkap sebagai modul.
+  const moduleOf = (before) => {
+    const mods = [...before.matchAll(/^##\s+(?!\d*\.?\d*\s*[—–-])?(?:Modul\s*[:\d]*\s*)?([A-Z][^\n#]{2,40})$/gm)];
+    return mods.length ? mods[mods.length - 1][1].trim() : 'Umum';
+  };
+  for (let i = 0; i < headings.length; i++) {
+    const h = headings[i];
+    const bodyStart = h.index + h[0].length;
+    const bodyEnd = i + 1 < headings.length ? headings[i + 1].index : text.length;
+    const body = text.slice(bodyStart, bodyEnd).trim();
+    const bullets = [...body.matchAll(/^[-*]\s+(.+)$/gm)].map(m => m[1].trim());
+    const id = h[1].toUpperCase().replace(/\s+/g, '');
+    if (!/^(?:TASK|T)[-\w.]*\d/.test(id)) continue;
+    tasks.push({
+      id,
+      title: h[2].trim() || id,
+      module: moduleOf(text.slice(0, h.index)),
+      priority: /HIGH/i.test(body) ? 'HIGH' : /LOW/i.test(body) ? 'LOW' : 'MEDIUM',
+      spec: [h[2].trim(), ...bullets].filter(Boolean).join('\n')
+    });
+  }
+  return tasks;
 }
 
 const CLARIFY_SYSTEM_PROMPT = `
