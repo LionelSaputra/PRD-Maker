@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 const ROOT = resolve(import.meta.dirname, '..');
 
 import {
+  extractJSON,
   fetchAvailableModels,
   generateClarifications,
   generatePRDFromPrompt,
@@ -333,6 +334,32 @@ try {
     prd.architectureOverview = 'Keputusan teknologi: Node.js dan SQLite untuk 5 petugas; PostgreSQL ditolak karena belum perlu. HTTPS dan validasi input. ';
     prd.architectureOverview += 'Lingkup di luar aplikasi: pemrosesan email masuk dan integrasi sistem luar.';
     assert.ok(!validatePRD(prd, 'skeleton').some(p => /batas lingkup/i.test(p)));
+  });
+
+  await test('markdown task list from a JSON-mode-ignoring model is parsed, not discarded', () => {
+    // Keluaran NYATA oa/deepseek-v4.1-flash-free: JSON mode diminta, tapi tahap
+    // tasks dijawab Markdown dengan heading "### T1.1 — ...".
+    const md = [
+      '## Modul 1: Design System',
+      '### T1.1 — Setup proyek & tooling',
+      '- **File:** package.json',
+      '- **Output:** proyek jalan',
+      '### T1.2 — Token desain',
+      '- **File:** src/theme.css',
+      '## Modul 2: Arsip',
+      '### T2.1 — Model data & penyimpanan',
+      '- **File:** src/db.js',
+      '- **Prioritas:** HIGH'
+    ].join('\n');
+    const parsed = JSON.parse(extractJSON(md));
+    assert.equal(parsed.tasks.length, 3);
+    assert.deepEqual(parsed.tasks.map(t => t.id), ['T1.1', 'T1.2', 'T2.1']);
+    assert.deepEqual(parsed.tasks.map(t => t.module), ['Design System', 'Design System', 'Arsip']);
+    assert.equal(parsed.tasks[2].priority, 'HIGH');
+    assert.ok(parsed.tasks[0].spec.includes('package.json'));
+    // Prose tanpa daftar task tetap gagal: extractJSON mengembalikan teks apa
+    // adanya (bukan JSON), bukan task kosong yang menyamar jadi data.
+    assert.throws(() => JSON.parse(extractJSON('Baik, saya akan mulai mengerjakan proyek ini.')));
   });
 
   await test('validation rejects empty dependency, non-path file label, and missing done criteria', () => {
