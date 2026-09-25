@@ -346,6 +346,11 @@ const server = http.createServer(async (req, res) => {
 
     sendJson(res, 404, { error: 'Not found' });
   } catch (err) {
+    // Error validasi PRD bukan kesalahan server: beri 422 + daftar masalahnya
+    // supaya UI bisa menampilkan apa yang kurang, bukan "Internal error".
+    if (err.validationProblems) {
+      return sendJson(res, 422, { error: err.message, problems: err.validationProblems });
+    }
     sendJson(res, 500, { error: err.message });
   }
 });
