@@ -597,7 +597,11 @@ function hasUIRequirement(prd) {
     // ("mode cetak (tanpa UI): tabel untuk desktop"), bukan pernyataan bahwa
     // produknya tidak punya antarmuka. Terukur: kalimat seperti itu membuat
     // aplikasi web ditolak sebagai produk non-UI, lalu Design System dibuang.
-    const before = core.slice(Math.max(0, match.index - 60), match.index);
+    // "..., bukan CLI, bot, atau API tanpa UI" adalah KONTRAS: kalimat itu
+    // justru menegaskan produknya ber-antarmuka. Terukur: satu kalimat seperti
+    // itu membuat aplikasi web ditolak sebagai produk non-UI.
+    const before = core.slice(Math.max(0, match.index - 70), match.index);
+    if (/\b(?:bukan|bukanlah|not)\b[^.]{0,70}$/i.test(before)) continue;
     if (/\(\s*$|:\s*$|,\s*$|(?:kecuali|mis\.|misalnya|contoh|khusus|hanya untuk|saat|ketika|mode|versi)\b[^.]{0,20}$/i.test(before)) continue;
     return false;
   }
