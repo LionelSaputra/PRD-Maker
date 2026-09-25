@@ -665,8 +665,12 @@ function hasUIRequirement(prd) {
 function corruptedText(text) {
   const value = String(text || '');
   if (/[\u0400-\u04FF\u4E00-\u9FFF\u0600-\u06FF\u3040-\u30FF]/.test(value)) return true;
-  // Pengulangan token pendek ("UEUEUEUEUEUE") atau kata panjang yang sama.
-  return /(\w{2,4})\1{3,}/.test(value) || /\b(\w{6,})\b(?:[^\w]{0,3}\1\b){1,}/.test(value);
+  // Korupsi nyata: token pendek diulang TANPA pemisah ("UEUEUEUEUEUE").
+  if (/(\w{2,4})\1{3,}/.test(value)) return true;
+  // Kata yang sama dipisah spasi/koma ("petugas, petugas", "backup 'backup")
+  // adalah bahasa Indonesia biasa, bukan korupsi. Hanya rentetan panjang
+  // yang mencurigakan: kata sama muncul 4+ kali berurutan.
+  return /\b(\w{5,})\b(?:[^\w]{0,3}\1\b){3,}/i.test(value);
 }
 
 function hasScaleEvidence(prd) {
