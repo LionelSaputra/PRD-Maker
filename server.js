@@ -4,6 +4,8 @@ import { randomUUID } from 'crypto';
 import { db } from './src/db.js';
 import { generateClarifications, generatePRDFromPrompt, fetchAvailableModels, appendFeatureChange } from './src/ai-prd.js';
 import { buildPreviewHtml } from './src/preview.js';
+import { DESIGN_DIRECTIONS, designDirectionPromptBlock } from './src/design-templates.js';
+import { buildArchitecturePrompt, buildTaskPrompt } from './src/prompt-export.js';
 
 const PORT = process.env.PORT || 3333;
 const AUTH_CHECK_URL = process.env.AUTH_CHECK_URL || 'http://127.0.0.1:20131/check';
@@ -25,7 +27,7 @@ async function hasValidSession(req) {
   const cookie = req.headers.cookie || '';
   if (!cookie) return false;
   try {
-    const r = await fetch(AUTH_CHECK_URL, { headers: { Cookie: cookie } });
+    const r = await fetch(AUTH_CHECK_URL, { headers: { Cookie: cookie }, signal: AbortSignal.timeout(5000) });
     return r.ok;
   } catch {
     return false; // layanan auth mati -> tolak, jangan buka pintu
@@ -49,15 +51,36 @@ async function requireWorkspaceAuth(req, res, ws) {
 function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => { body += chunk; });
+    let bytes = 0;
+    req.on('data', chunk => {
+      bytes += chunk.length;
+      if (bytes > 131072) { reject(Object.assign(new Error('Request terlalu besar (maks. 128 KiB).'), { statusCode: 413 })); return; }
+      body += chunk;
+    });
     req.on('end', () => {
       if (!body) return resolve({});
       try {
-        resolve(JSON.parse(body));
+        const parsed = JSON.parse(body);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid JSON');
+        resolve(parsed);
       } catch (err) {
-        reject(new Error('Invalid JSON'));
+        reject(Object.assign(new Error('Body harus berupa objek JSON yang valid.'), { statusCode: 400 }));
       }
     });
+    req.on('error', reject);
+  });
+}
+
+// Batas ukuran yang sama dengan parseJsonBody, tapi isi apa pun (form HTML).
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '', bytes = 0;
+    req.on('data', chunk => {
+      bytes += chunk.length;
+      if (bytes > 131072) { reject(Object.assign(new Error('Request terlalu besar (maks. 128 KiB).'), { statusCode: 413 })); return; }
+      body += chunk;
+    });
+    req.on('end', () => resolve(body));
     req.on('error', reject);
   });
 }
@@ -65,6 +88,7 @@ function parseJsonBody(req) {
 function sendJson(res, status, data) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
+    'Cache-Control': 'no-store',
     // CORS dibatasi ke domain app sendiri. Sebelumnya '*', sehingga situs lain
     // bisa memanggil API ini dari browser pengunjung. CLI tidak butuh CORS.
     'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
@@ -89,8 +113,18 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin && req.headers.origin !== ALLOWED_ORIGIN) {
+      return sendJson(res, 403, { error: 'Origin tidak diizinkan.' });
+    }
+    // 0. GET /api/v1/design-directions (arah visual yang bisa dipilih user)
+    if (req.method === 'GET' && url.pathname === '/api/v1/design-directions') {
+      if (!await requireSession(req, res)) return;
+      return sendJson(res, 200, { directions: DESIGN_DIRECTIONS });
+    }
+
     // 0. GET /api/v1/models
     if (req.method === 'GET' && url.pathname === '/api/v1/models') {
+      if (!await requireSession(req, res)) return;
       const models = await fetchAvailableModels();
       return sendJson(res, 200, { models });
     }
@@ -129,8 +163,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/v1/workspaces/clarify') {
       if (!await requireSession(req, res)) return;
       const body = await parseJsonBody(req);
-      if (!body.idea) {
-        return sendJson(res, 400, { error: 'Field "idea" is required' });
+      if (typeof body.idea !== 'string' || !body.idea.trim() || body.idea.length > 20000) {
+        return sendJson(res, 400, { error: 'Ide wajib berupa teks 1-20000 karakter.' });
+      }
+      if ((body.name != null && (typeof body.name !== 'string' || body.name.length > 160)) || (body.model != null && (typeof body.model !== 'string' || body.model.length > 160))) {
+        return sendJson(res, 400, { error: 'Nama/model tidak valid.' });
+      }
+      if (body.clarifications != null && (!Array.isArray(body.clarifications) || body.clarifications.length > 20 || body.clarifications.some(c => !c || typeof c.question !== 'string' || typeof c.answer !== 'string'))) {
+        return sendJson(res, 400, { error: 'Klarifikasi harus berupa daftar pertanyaan dan jawaban.' });
       }
       const questionsData = await generateClarifications(body.idea, body.name, body.model);
       return sendJson(res, 200, questionsData);
@@ -140,19 +180,30 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/v1/workspaces/generate') {
       if (!await requireSession(req, res)) return;
       const body = await parseJsonBody(req);
-      if (!body.idea) {
-        return sendJson(res, 400, { error: 'Field "idea" is required' });
+      if (typeof body.idea !== 'string' || !body.idea.trim() || body.idea.length > 20000) {
+        return sendJson(res, 400, { error: 'Ide wajib berupa teks 1-20000 karakter.' });
+      }
+      if ((body.name != null && (typeof body.name !== 'string' || body.name.length > 160)) || (body.model != null && (typeof body.model !== 'string' || body.model.length > 160))) {
+        return sendJson(res, 400, { error: 'Nama/model tidak valid.' });
+      }
+      if (body.clarifications != null && (!Array.isArray(body.clarifications) || body.clarifications.length > 20 || body.clarifications.some(c => !c || typeof c.question !== 'string' || typeof c.answer !== 'string'))) {
+        return sendJson(res, 400, { error: 'Klarifikasi harus berupa daftar pertanyaan dan jawaban.' });
       }
 
-      const prd = await generatePRDFromPrompt(body.idea, body.name, body.clarifications || [], body.model);
+      // Arah visual: pilihan user kalau ada, selain itu model yang memilih.
+      const designDirection = typeof body.designDirection === 'string' && DESIGN_DIRECTIONS.some(d => d.id === body.designDirection)
+        ? body.designDirection
+        : undefined;
+      const prd = await generatePRDFromPrompt(body.idea, body.name, body.clarifications || [], body.model, designDirection);
       const wsId = 'ws_' + randomUUID().substring(0, 8);
       const token = 'tok_' + randomUUID().replace(/-/g, '');
 
       const insertWs = db.prepare(`
-        INSERT INTO workspaces (id, token, name, tagline, summary, architecture, features_json, db_schema_json, api_endpoints_json, tech_stack)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO workspaces (id, token, name, tagline, summary, architecture, features_json, db_schema_json, api_endpoints_json, tech_stack, design_direction)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
+      const saveWorkspace = db.transaction(() => {
       insertWs.run(
         wsId,
         token,
@@ -163,7 +214,8 @@ const server = http.createServer(async (req, res) => {
         JSON.stringify(prd.features || []),
         JSON.stringify(prd.databaseSchema || []),
         JSON.stringify(prd.apiEndpoints || []),
-        JSON.stringify(prd.techStack || [])
+        JSON.stringify(prd.techStack || []),
+        designDirection || null
       );
 
       const insertTask = db.prepare(`
@@ -180,10 +232,12 @@ const server = http.createServer(async (req, res) => {
         }
       });
       insertMany();
+      });
+      saveWorkspace();
 
       return sendJson(res, 201, {
         workspace: { id: wsId, token, name: prd.name || prd.projectName, summary: prd.summary },
-        totalTasks: tasks.length
+        totalTasks: prd.tasks.length
       });
     }
 
@@ -212,6 +266,25 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, updated);
     }
 
+    // 3.2 POST .../preview/direction — simpan arah visual pilihan user.
+    // Letakkan SEBELUM handler GET umum di bawah supaya tidak tertangkapnya.
+    if (req.method === 'POST' && url.pathname.endsWith('/preview/direction')) {
+      const parts = url.pathname.split('/');
+      const wsId = parts[parts.length - 3];
+      const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(wsId);
+      if (!ws) return sendJson(res, 404, { error: 'Workspace not found' });
+      if (!await requireWorkspaceAuth(req, res, ws)) return;
+      // Form HTML mengirim application/x-www-form-urlencoded, bukan JSON.
+      const raw = await readBody(req);
+      const body = Object.fromEntries(new URLSearchParams(raw));
+      const hit = DESIGN_DIRECTIONS.find(d => d.id === body.direction);
+      if (!hit) return sendJson(res, 400, { error: 'Arah visual tidak dikenal.' });
+      db.prepare('UPDATE workspaces SET design_direction = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(hit.id, wsId);
+      // 303 supaya browser kembali ke GET dan tidak mengulang POST.
+      res.writeHead(303, { Location: `/api/v1/workspaces/${wsId}/preview?compare=1&direction=${encodeURIComponent(hit.id)}`, 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+
     // 3.2 GET /api/v1/workspaces/:id/preview  (halaman contoh UI dari modul design system)
     // Harus DIPERIKSA SEBELUM handler GET workspace umum di bawah, karena handler
     // itu menangkap semua path yang diawali /api/v1/workspaces/.
@@ -223,9 +296,27 @@ const server = http.createServer(async (req, res) => {
       if (!await requireWorkspaceAuth(req, res, ws)) return;
       const features = JSON.parse(ws.features_json || '[]');
       const tasks = db.prepare('SELECT * FROM tasks WHERE workspace_id = ? ORDER BY id ASC').all(wsId);
-      const html = buildPreviewHtml(ws, features, tasks);
+      // ?direction=<id> hanya untuk membandingkan arah visual sebelum PRD ada.
+      // ?compare=1 menampilkan grid semua arah beserta tombol memilih.
+      const wanted = url.searchParams.get('direction') || '';
+      const compare = url.searchParams.get('compare') === '1';
+      const shown = DESIGN_DIRECTIONS.some(d => d.id === wanted) ? wanted : (ws.design_direction || null);
+      const html = buildPreviewHtml(ws, features, tasks, { direction: shown, compare, compareId: ws.design_direction || null });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(html);
+    }
+
+    // Export canonical context; never reconstruct a lossy PRD from DOM text.
+    const promptRoute = url.pathname.match(/^\/api\/v1\/workspaces\/([^/]+)\/prompts(?:\/([^/]+))?$/);
+    if (req.method === 'GET' && promptRoute) {
+      const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(promptRoute[1]);
+      if (!ws) return sendJson(res, 404, { error: 'Workspace not found' });
+      if (!await requireWorkspaceAuth(req, res, ws)) return;
+      const tasks = db.prepare('SELECT * FROM tasks WHERE workspace_id = ? ORDER BY id ASC').all(ws.id);
+      const prompt = promptRoute[2]
+        ? buildTaskPrompt(ws, tasks, decodeURIComponent(promptRoute[2]))
+        : buildArchitecturePrompt(ws, tasks);
+      return sendJson(res, 200, { prompt });
     }
 
     // 3. GET /api/v1/workspaces/:id
@@ -253,6 +344,7 @@ const server = http.createServer(async (req, res) => {
           databaseSchema: JSON.parse(ws.db_schema_json || '[]'),
           apiEndpoints: JSON.parse(ws.api_endpoints_json || '[]'),
           tech_stack: JSON.parse(ws.tech_stack || '[]'),
+          designDirection: ws.design_direction || null,
           created_at: ws.created_at
         },
         stats: { total: tasks.length, completed: completedCount, progress },
@@ -285,7 +377,7 @@ const server = http.createServer(async (req, res) => {
       if (!await requireWorkspaceAuth(req, res, ws)) return;
 
       const body = await parseJsonBody(req);
-      if (!body.changeRequest) {
+      if (typeof body.changeRequest !== 'string' || !body.changeRequest.trim() || body.changeRequest.length > 20000) {
         return sendJson(res, 400, { error: 'Field "changeRequest" is required' });
       }
 
@@ -293,6 +385,7 @@ const server = http.createServer(async (req, res) => {
       const existingPRD = {
         name: ws.name,
         summary: ws.summary,
+        architectureOverview: ws.architecture,
         features: JSON.parse(ws.features_json || '[]'),
         databaseSchema: JSON.parse(ws.db_schema_json || '[]'),
         apiEndpoints: JSON.parse(ws.api_endpoints_json || '[]'),
@@ -300,38 +393,22 @@ const server = http.createServer(async (req, res) => {
         existingTasks: existingTasks.map(t => ({ id: t.id.replace(`${wsId}_`, ''), title: t.title, status: t.status }))
       };
 
-      const updateResult = await appendFeatureChange(existingPRD, body.changeRequest, body.model);
-
-      if (updateResult.updatedFeatures || updateResult.updatedEndpoints || updateResult.updatedDatabaseSchema) {
-        const feats = updateResult.updatedFeatures || existingPRD.features;
-        const eps = updateResult.updatedEndpoints || existingPRD.apiEndpoints;
-        const dbs = updateResult.updatedDatabaseSchema || existingPRD.databaseSchema;
-
-        db.prepare(`
-          UPDATE workspaces
-          SET features_json = ?, api_endpoints_json = ?, db_schema_json = ?
-          WHERE id = ?
-        `).run(
-          JSON.stringify(feats),
-          JSON.stringify(eps),
-          JSON.stringify(dbs),
-          wsId
-        );
-      }
+      const updateResult = await appendFeatureChange(existingPRD, existingPRD.existingTasks, body.changeRequest, body.model);
 
       const newTasks = updateResult.newTasks || [];
-      const insertTask = db.prepare(`
-        INSERT INTO tasks (id, workspace_id, title, spec, status)
-        VALUES (?, ?, ?, ?, 'todo')
-      `);
-
-      const currentCount = existingTasks.length;
       const inserted = [];
       const insertTx = db.transaction(() => {
-        for (let i = 0; i < newTasks.length; i++) {
-          const t = newTasks[i];
-          const taskSlug = t.id || `TASK-${String(currentCount + i + 1).padStart(2, '0')}`;
-          const uniqueTaskId = `${wsId}_${taskSlug}`;
+        db.prepare(`UPDATE workspaces SET features_json = ?, api_endpoints_json = ?, db_schema_json = ?, summary = ?, architecture = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(
+          JSON.stringify([...existingPRD.features, ...(updateResult.newFeatures || [])]),
+          JSON.stringify([...existingPRD.apiEndpoints, ...(updateResult.newEndpoints || [])]),
+          JSON.stringify([...existingPRD.databaseSchema, ...(updateResult.newDbTables || [])]),
+          updateResult.updatedSummary || ws.summary,
+          ws.architecture + '\n\nPerubahan: ' + updateResult.changeSummary,
+          wsId
+        );
+        const insertTask = db.prepare(`INSERT INTO tasks (id, workspace_id, title, spec, status) VALUES (?, ?, ?, ?, 'todo')`);
+        for (const t of newTasks) {
+          const uniqueTaskId = `${wsId}_${t.id}`;
           insertTask.run(uniqueTaskId, wsId, t.title, t.spec);
           inserted.push({ id: uniqueTaskId, title: t.title, spec: t.spec, status: 'todo' });
         }
@@ -368,7 +445,7 @@ const server = http.createServer(async (req, res) => {
     if (err.validationProblems) {
       return sendJson(res, 422, { error: err.message, problems: err.validationProblems });
     }
-    sendJson(res, 500, { error: err.message });
+    sendJson(res, err.statusCode || 500, { error: err.statusCode || /^(Gagal|Model|PRD)/.test(err.message) ? err.message : 'Terjadi kesalahan server. Coba lagi.' });
   }
 });
 
@@ -528,8 +605,10 @@ function renderHTML() {
       flex-shrink: 0;
     }
 
-    .btn-new-chat:hover {
-      border-color: var(--border-focus);
+    @media (hover:hover) and (pointer:fine) {
+      .btn-new-chat:hover {
+        border-color: var(--border-focus);
+      }
     }
 
     .sidebar-list {
@@ -551,9 +630,11 @@ function renderHTML() {
       position: relative;
     }
 
-    .history-row:hover {
-      background: var(--surface-hover);
-      border-color: var(--border);
+    @media (hover:hover) and (pointer:fine) {
+      .history-row:hover {
+        background: var(--surface-hover);
+        border-color: var(--border);
+      }
     }
 
     .history-row.active {
@@ -598,9 +679,11 @@ function renderHTML() {
       height: 13px;
     }
 
-    .btn-del-ws:hover {
-      color: var(--status-failed);
-      background: rgba(239, 68, 68, 0.12);
+    @media (hover:hover) and (pointer:fine) {
+      .btn-del-ws:hover {
+        color: var(--status-failed);
+        background: rgba(239, 68, 68, 0.12);
+      }
     }
 
     .guide-actions {
@@ -664,12 +747,14 @@ function renderHTML() {
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: all var(--transition);
+      transition: color var(--transition), border-color var(--transition);
     }
 
-    .btn-toggle-sidebar:hover {
-      color: var(--text);
-      border-color: var(--border-focus);
+    @media (hover:hover) and (pointer:fine) {
+      .btn-toggle-sidebar:hover {
+        color: var(--text);
+        border-color: var(--border-focus);
+      }
     }
 
     .brand {
@@ -709,7 +794,7 @@ function renderHTML() {
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: all var(--transition);
+      transition: color var(--transition), background var(--transition);
     }
 
     .theme-btn svg {
@@ -722,8 +807,10 @@ function renderHTML() {
       fill: none;
     }
 
-    .theme-btn:hover {
-      color: var(--text);
+    @media (hover:hover) and (pointer:fine) {
+      .theme-btn:hover {
+        color: var(--text);
+      }
     }
 
     .theme-btn.active {
@@ -781,7 +868,7 @@ function renderHTML() {
       background: var(--surface);
       border: 1px solid var(--border);
       color: var(--text-subtle);
-      transition: all var(--transition);
+      transition: color var(--transition), background var(--transition), border-color var(--transition);
     }
 
     .step-item.active .step-num {
@@ -902,8 +989,10 @@ function renderHTML() {
       transition: opacity var(--transition);
     }
 
-    .btn-primary:hover {
-      opacity: 0.9;
+    @media (hover:hover) and (pointer:fine) {
+      .btn-primary:hover {
+        opacity: 0.9;
+      }
     }
 
     .btn-primary:disabled {
@@ -926,7 +1015,7 @@ function renderHTML() {
       justify-content: center;
       gap: 6px;
       line-height: 1;
-      transition: all var(--transition);
+      transition: color var(--transition), background var(--transition), border-color var(--transition);
     }
 
     .btn-secondary svg {
@@ -937,9 +1026,11 @@ function renderHTML() {
       flex-shrink: 0;
     }
 
-    .btn-secondary:hover {
-      background: var(--surface-hover);
-      border-color: var(--border-focus);
+    @media (hover:hover) and (pointer:fine) {
+      .btn-secondary:hover {
+        background: var(--surface-hover);
+        border-color: var(--border-focus);
+      }
     }
 
     /* Question list: flat numbered rows, separated by rules, never nested cards */
@@ -976,6 +1067,63 @@ function renderHTML() {
       margin-top: 3px;
     }
 
+    .hint {
+      font-size: 0.775rem;
+      color: var(--text-subtle);
+      margin-top: 0.4rem;
+      line-height: 1.55;
+    }
+
+    .dir-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+      gap: 0.5rem;
+      margin-top: 0.6rem;
+    }
+
+    .dir-card {
+      text-align: left;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.5rem;
+      cursor: pointer;
+      font: inherit;
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      transition: border-color var(--transition), background var(--transition);
+    }
+
+    .dir-card[aria-pressed="true"] {
+      border-color: var(--accent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+
+    .dir-name {
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+
+    .dir-use {
+      font-size: 0.7rem;
+      color: var(--text-subtle);
+      line-height: 1.4;
+    }
+
+    .dir-swatches {
+      display: flex;
+      gap: 3px;
+    }
+
+    .dir-swatches span {
+      flex: 1;
+      height: 12px;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+    }
+
     .q-options {
       display: flex;
       flex-direction: column;
@@ -997,8 +1145,10 @@ function renderHTML() {
       transition: border-color var(--transition), background var(--transition);
     }
 
-    .option-pill:hover {
-      border-color: var(--border-focus);
+    @media (hover:hover) and (pointer:fine) {
+      .option-pill:hover {
+        border-color: var(--border-focus);
+      }
     }
 
     .option-pill:has(input:checked) {
@@ -1108,9 +1258,11 @@ function renderHTML() {
       flex-shrink: 0;
     }
 
-    .btn-copy:hover {
-      border-color: var(--border-focus);
-      background: var(--surface-hover);
+    @media (hover:hover) and (pointer:fine) {
+      .btn-copy:hover {
+        border-color: var(--border-focus);
+        background: var(--surface-hover);
+      }
     }
 
     .btn-copy:focus-visible {
@@ -1366,6 +1518,29 @@ function renderHTML() {
       color: var(--text-subtle);
       font-size: 0.8rem;
     }
+    /* Preserve the warm utility identity; fix narrow screens, not a redesign. */
+    .task-title, .guide-step-item > div { min-width: 0; overflow-wrap: anywhere; }
+    .workspace-heading, .workspace-actions { flex-wrap: wrap; }
+    .endpoint-row { flex-wrap: wrap; overflow-wrap: anywhere; }
+    @media (max-width: 700px) {
+      body { flex-direction: column; }
+      aside { position: static; width: 100%; height: auto; max-height: 220px; border-right: 0; border-bottom: 1px solid var(--border); }
+      aside.collapsed { display: none; }
+      .content-area { padding: 1.25rem 1rem 3rem; }
+      header { padding: 0 1rem; }
+      .header-left { gap: .5rem; }
+      .stepper { gap: .4rem; }
+      .step-line { min-width: 8px; margin: 0; }
+      .step-item { gap: .3rem; font-size: .7rem; }
+      .task-head, .guide-step-item { flex-direction: column; align-items: flex-start; }
+      .task-actions { flex-wrap: wrap; }
+      .workspace-actions { flex-shrink: 1 !important; }
+      .btn-copy, .btn-primary, .btn-secondary, .btn-toggle-sidebar { min-height: 44px; }
+      .cli-box { flex-wrap: wrap; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+    }
   </style>
 </head>
 <body>
@@ -1454,20 +1629,29 @@ function renderHTML() {
 
         <div class="card">
           <div class="form-group">
-            <label class="label">Pilihan Model AI Engine</label>
+            <label class="label" for="ai-model-select">Pilihan Model AI Engine</label>
             <select class="select-input" id="ai-model-select">
-              <option value="oa/mimo-v2.6-flash">Mimo 2.6 Flash (disarankan)</option>
-              <option value="oa/glm-5.3">GLM 5.3</option>
+              <option value="oa/space-bunny-free">Space Bunny, rekomendasi untuk PRD</option>
+              <option value="">Default konfigurasi server</option>
             </select>
           </div>
 
           <div class="form-group">
-            <label class="label">Nama Proyek (Opsional)</label>
+            <label class="label" for="design-direction-select">Arah Visual (Opsional)</label>
+            <select class="select-input" id="design-direction-select">
+              <option value="">Biarkan AI memilih dari brief</option>
+            </select>
+            <p class="hint" id="direction-hint">Pilih arah kalau sudah tahu nuansa yang diinginkan. Kalau dikosongkan, AI membaca brief dan memilihnya sendiri, lalu menyebut alasannya di PRD.</p>
+            <div class="dir-grid" id="direction-grid" aria-label="Pratinjau arah visual"></div>
+          </div>
+
+          <div class="form-group">
+            <label class="label" for="proj-name">Nama Proyek (Opsional)</label>
             <input type="text" class="input-text" id="proj-name" placeholder="Misal: Katalog Inventory Gudang">
           </div>
 
           <div class="form-group">
-            <label class="label">Deskripsi Ide / Problem Statement</label>
+            <label class="label" for="proj-idea">Deskripsi Ide / Problem Statement</label>
             <textarea class="textarea" id="proj-idea" placeholder="Ceritakan fitur utama, alur kerja transaksi, integrasi pihak ketiga, atau target pengguna..."></textarea>
           </div>
 
@@ -1502,12 +1686,16 @@ function renderHTML() {
       <!-- STEP 3: WORKSPACE PRD & TASK TRACKER -->
       <div class="view-panel" id="workspace-view">
         <div style="margin-bottom: 1.25rem;">
-          <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+          <div class="workspace-heading" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
             <h1 class="view-title" id="ws-name" style="word-break: break-word; font-size: 1.45rem; margin-bottom: 0;">Project Name</h1>
-            <div style="display: flex; gap: 0.5rem; flex-shrink: 0;">
+            <div class="workspace-actions" style="display: flex; gap: 0.5rem; flex-shrink: 0;">
               <button class="btn-secondary" id="btn-preview-ui" style="white-space: nowrap;" onclick="openPreview()" title="Lihat contoh tampilan dari modul Design System">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
                 <span>Lihat Preview UI</span>
+              </button>
+              <button class="btn-secondary" style="white-space: nowrap;" onclick="openDirectionCompare()" title="Bandingkan palet semua arah visual sebelum memilih">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect></svg>
+                <span>Bandingkan Arah Visual</span>
               </button>
               <button class="btn-secondary" style="white-space: nowrap;" onclick="startNewSession()">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
@@ -1530,10 +1718,10 @@ function renderHTML() {
               <span class="guide-badge">LANGKAH 1</span>
               <div>
                 <strong>Berikan Konteks Awal ke AI:</strong>
-                <div class="guide-text">Buka Cursor / the assistant / ChatGPT, lalu salin prompt konteks awal di bawah ini untuk mengajari AI tentang gambaran umum arsitektur dan modul proyek Anda.</div>
+                <div class="guide-text">Salin PRD lengkap ke coding agent: arsitektur, acceptance criteria, API, task, dan kontrak desain dari skill Anda sudah disertakan. Prompt task juga dapat dipakai di chat baru.</div>
                 <button class="btn-copy guide-actions" onclick="copyFullArchitecturePrompt(this)">
                   <svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                  <span>Salin Prompt Konteks Awal</span>
+                  <span>Salin PRD & Prompt Lengkap</span>
                 </button>
               </div>
             </div>
@@ -1609,7 +1797,7 @@ function renderHTML() {
         <!-- Task List -->
         <div class="card">
           <div class="card-title">Daftar Task Eksekusi Terminal (Realtime)</div>
-          <div class="card-desc">Status task tersinkronisasi otomatis saat AI agent menyelesaikan pekerjaan di CLI.</div>
+          <div class="card-desc">Salin task beserta konteks PRD dan aturan desain. Sinkronisasi status melalui CLI bersifat opsional.</div>
           <div id="tasks-container"></div>
         </div>
 
@@ -1631,6 +1819,7 @@ function renderHTML() {
   <script>
     let currentWsId = null;
     let questionsList = [];
+    const createdWorkspaceTokens = Object.create(null);
 
     function toggleSidebar() {
       const sidebar = document.getElementById('sidebar');
@@ -1674,6 +1863,58 @@ function renderHTML() {
       }
     }
 
+    const DIRECTION_SWATCH_KEYS = ['bg', 'surface', 'border', 'text', 'textMuted', 'accent', 'done'];
+
+    async function initDirections() {
+      try {
+        const res = await fetch('/api/v1/design-directions', { credentials: 'include', headers: { 'Accept': 'application/json' } });
+        if (!res.ok) return;
+        const data = await res.json();
+        const directions = data.directions;
+        if (!Array.isArray(directions) || !directions.length) return;
+        const select = document.getElementById('design-direction-select');
+        directions.forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.id;
+          opt.innerText = d.name + ' - ' + d.use;
+          select.appendChild(opt);
+        });
+        const grid = document.getElementById('direction-grid');
+        grid.innerHTML = '';
+        const sync = () => grid.querySelectorAll('.dir-card').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.direction === select.value)));
+        directions.forEach(d => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'dir-card';
+          btn.dataset.direction = d.id;
+          const name = document.createElement('span');
+          name.className = 'dir-name';
+          name.textContent = d.name;
+          const use = document.createElement('span');
+          use.className = 'dir-use';
+          use.textContent = d.use;
+          const sw = document.createElement('span');
+          sw.className = 'dir-swatches';
+          sw.setAttribute('aria-hidden', 'true');
+          (d.light || DIRECTION_SWATCH_KEYS).forEach(c => {
+            const chip = document.createElement('span');
+            chip.style.background = c;
+            sw.appendChild(chip);
+          });
+          btn.append(name, use, sw);
+          btn.addEventListener('click', () => {
+            select.value = select.value === d.id ? '' : d.id;
+            sync();
+          });
+          grid.appendChild(btn);
+        });
+        select.addEventListener('change', sync);
+        sync();
+      } catch (err) {
+        console.warn('Arah visual tidak dimuat:', err);
+      }
+    }
+
     async function initModels() {
       try {
         const res = await fetch('/api/v1/models', { credentials: 'include', headers: { 'Accept': 'application/json' } });
@@ -1684,19 +1925,28 @@ function renderHTML() {
         const prev = select.value;
         // Label ramah dibaca untuk model yang dikenal; sisanya pakai kode apa adanya.
         const LABELS = {
-          'oa/mimo-v2.6-flash': 'Mimo 2.6 Flash (disarankan)',
+          'oa/mimo-v2.6-flash': 'Mimo 2.6 Flash',
+          'oa/gpt-6-astra': 'GPT 6 Astra',
+          'oa/space-bunny-free': 'Space Bunny',
           'oa/glm-5.3': 'GLM 5.3'
         };
+        const recommended = 'oa/space-bunny-free';
+        const serverDefault = document.createElement('option');
+        serverDefault.value = '';
+        serverDefault.innerText = 'Default konfigurasi server';
         select.innerHTML = '';
-        data.models.forEach(m => {
+        select.appendChild(serverDefault);
+        const recommendedOpt = document.createElement('option');
+        recommendedOpt.value = recommended;
+        recommendedOpt.innerText = 'Space Bunny, rekomendasi untuk PRD';
+        select.appendChild(recommendedOpt);
+        data.models.filter(m => m !== recommended).forEach(m => {
           const opt = document.createElement('option');
           opt.value = m;
           opt.innerText = LABELS[m] || m;
           select.appendChild(opt);
         });
-        // Pertahankan pilihan sebelumnya; kalau tidak ada, pakai model yang disarankan.
-        if ([...select.options].some(o => o.value === prev)) select.value = prev;
-        else if ([...select.options].some(o => o.value === 'oa/mimo-v2.6-flash')) select.value = 'oa/mimo-v2.6-flash';
+        select.value = data.models.includes(prev) || prev === '' ? prev : recommended;
       } catch (err) {
         console.warn('Failed to load dynamic model list:', err);
       }
@@ -1864,6 +2114,11 @@ function renderHTML() {
       window.open('/api/v1/workspaces/' + currentWsId + '/preview', '_blank');
     }
 
+    function openDirectionCompare() {
+      if (!currentWsId) return alert('Buka salah satu sesi terlebih dahulu.');
+      window.open('/api/v1/workspaces/' + currentWsId + '/preview?compare=1', '_blank');
+    }
+
     function startNewSession() {
       currentWsId = null;
       window.location.hash = '';
@@ -1877,6 +2132,7 @@ function renderHTML() {
       const idea = document.getElementById('proj-idea').value.trim();
       const name = document.getElementById('proj-name').value.trim();
       const model = document.getElementById('ai-model-select').value;
+      const designDirection = document.getElementById('design-direction-select').value;
 
       const clarifications = [];
       questionsList.forEach((q, qIdx) => {
@@ -1905,13 +2161,14 @@ function renderHTML() {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ idea, name, model, clarifications })
+          body: JSON.stringify({ idea, name, model, designDirection, clarifications })
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
 
         window.location.hash = data.workspace.id;
-        await loadWorkspace(data.workspace.id);
+        createdWorkspaceTokens[data.workspace.id] = data.workspace.token;
+        loadWorkspace(data.workspace.id);
         loadHistorySidebar();
       } catch (err) {
         alert('Gagal: ' + err.message);
@@ -2044,7 +2301,11 @@ function renderHTML() {
           }
 
           const origin = window.location.origin;
-          document.getElementById('ws-cli-cmd').innerText = 'prdmaker connect --workspace ' + id + ' --token ' + ws.token + ' --url ' + origin;
+          const cliToken = createdWorkspaceTokens[id];
+          document.getElementById('ws-cli-cmd').innerText = cliToken
+            ? 'prdmaker connect --workspace ' + id + ' --token ' + cliToken + ' --url ' + origin
+            : 'Token tidak ditampilkan ulang. Gunakan kredensial CLI yang Anda simpan saat membuat workspace. Prompt di atas tetap dapat dipakai tanpa CLI.';
+          document.querySelector('[onclick="copyCli(this)"]').disabled = !cliToken;
         }
 
         // Update progress & tasks realtime HANYA jika data berubah
@@ -2075,7 +2336,7 @@ function renderHTML() {
             item.querySelector('.task-id').textContent = taskName;
             item.querySelector('.task-title strong').textContent = t.title;
             var copyBtn = item.querySelector('.btn-copy');
-            copyBtn.setAttribute('data-spec', t.spec || '');
+            copyBtn.setAttribute('data-task-id', t.id);
             copyBtn.setAttribute('onclick', 'copyPromptFromBtn(this)');
             var badge = item.querySelector('.badge-slot');
             badge.className = 'badge badge-' + t.status;
@@ -2099,44 +2360,25 @@ function renderHTML() {
       }
     }
 
+    async function copySavedPrompt(btn, taskId) {
+      if (!currentWsId) return;
+      btn.disabled = true;
+      try {
+        const path = '/api/v1/workspaces/' + encodeURIComponent(currentWsId) + '/prompts' +
+          (taskId ? '/' + encodeURIComponent(taskId) : '');
+        const res = await fetch(path, { credentials: 'include' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Gagal memuat prompt.');
+        if (navigator.clipboard && window.isSecureContext) {
+          try { await navigator.clipboard.writeText(data.prompt); showCopySuccess(btn); }
+          catch { fallbackCopy(data.prompt, btn); }
+        } else fallbackCopy(data.prompt, btn);
+      } catch (err) { alert(err.message); }
+      finally { btn.disabled = false; }
+    }
+
     function copyFullArchitecturePrompt(btn) {
-      const name = document.getElementById('ws-name').innerText;
-      const summary = document.getElementById('ws-summary').innerText;
-      const arch = document.getElementById('ws-architecture').innerText;
-
-      const techPills = Array.from(document.querySelectorAll('#ws-tech-stack .tech-pill')).map(el => el.innerText).join(', ');
-      const features = Array.from(document.querySelectorAll('#ws-features .module-item')).map(el => {
-        const head = el.querySelector('.module-head')?.innerText || '';
-        const desc = el.querySelector('.module-desc')?.innerText || '';
-        return '- ' + head + ': ' + desc;
-      }).join('\\n');
-
-      const dbs = Array.from(document.querySelectorAll('#ws-dbschema .db-table-item')).map(el => {
-        const tName = el.querySelector('.db-table-name')?.innerText || '';
-        const tDesc = el.querySelector('.db-table-desc')?.innerText || '';
-        const flds = Array.from(el.querySelectorAll('.field-chip')).map(f => f.innerText).join(', ');
-        return '- Tabel ' + tName + ' (' + tDesc + '): ' + flds;
-      }).join('\\n');
-
-      const prompt = '[KONTEKS AWAL PROYEK UNTUK AI CODING AGENT]\\n' +
-        'Saya sedang membangun aplikasi: "' + name + '"\\n\\n' +
-        'Ringkasan Proyek:\\n' + summary + '\\n\\n' +
-        'Tech Stack: ' + techPills + '\\n\\n' +
-        'Arsitektur Sistem:\\n' + arch + '\\n\\n' +
-        'Modul Fitur Utama:\\n' + (features || 'Tidak ada') + '\\n\\n' +
-        'Skema Database:\\n' + (dbs || 'Tidak ada') + '\\n\\n' +
-        '---\\n' +
-        'Tolong pelajari dan pahami konteks arsitektur proyek di atas. Cukup konfirmasi bahwa Anda sudah memahami arsitektur ini. Setelah ini saya akan memberikan instruksi task teknis bertahap (TASK-01, TASK-02, dst) untuk dikerjakan secara berurutan. Siap?';
-
-      if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(prompt).then(() => {
-          showCopySuccess(btn);
-        }).catch(() => {
-          fallbackCopy(prompt, btn);
-        });
-      } else {
-        fallbackCopy(prompt, btn);
-      }
+      return copySavedPrompt(btn);
     }
 
     function copyCli(btn) {
@@ -2153,16 +2395,7 @@ function renderHTML() {
     }
 
     function copyPromptFromBtn(btn) {
-      const spec = btn.getAttribute('data-spec') || '';
-      if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(spec).then(() => {
-          showCopySuccess(btn);
-        }).catch(() => {
-          fallbackCopy(spec, btn);
-        });
-      } else {
-        fallbackCopy(spec, btn);
-      }
+      return copySavedPrompt(btn, btn.getAttribute('data-task-id'));
     }
 
     function fallbackCopy(text, btn) {
@@ -2174,7 +2407,7 @@ function renderHTML() {
       ta.focus();
       ta.select();
       try {
-        document.execCommand('copy');
+        if (!document.execCommand('copy')) throw new Error('Clipboard ditolak');
         showCopySuccess(btn);
       } catch (err) {
         alert('Gagal menyalin otomatis. Silakan blok dan salin manual.');
@@ -2234,6 +2467,7 @@ function renderHTML() {
 
       setTheme(savedTheme);
       initModels();
+      initDirections();
       loadHistorySidebar();
 
       if (sidebarCollapsed) {

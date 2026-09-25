@@ -1,13 +1,13 @@
 import fs from 'fs';
 import os from 'os';
 import { join } from 'path';
-import { designTemplatePromptBlock } from './design-templates.js';
+import { designTemplatePromptBlock, designDirectionPromptBlock } from './design-templates.js';
+import { getDesignGuidance } from './design-guidance.js';
 
 // Konfigurasi penyedia AI. Dulu nilai-nilai ini di-hardcode ke satu server
 // tertentu, sehingga repo tidak bisa dijalankan di mesin lain. Sekarang dibaca
 // dari environment lebih dulu, baru jatuh ke berkas konfigurasi lokal.
 const DEFAULT_BASE_URL = 'http://127.0.0.1:20127/v1';
-const DEFAULT_MODEL = 'oa/mimo-v2.6-flash';
 const DEFAULT_CONFIG_PATH = join(os.homedir(), '.prdmaker', 'config.yaml');
 
 function readConfigFile() {
@@ -34,33 +34,27 @@ function getRouterConfig() {
   return {
     baseUrl: process.env.PRDMAKER_BASE_URL || fromFile.baseUrl || DEFAULT_BASE_URL,
     apiKey: process.env.PRDMAKER_API_KEY || fromFile.apiKey || null,
-    defaultModel: process.env.PRDMAKER_MODEL || fromFile.defaultModel || DEFAULT_MODEL
+    defaultModel: process.env.PRDMAKER_MODEL || fromFile.defaultModel || null
   };
 }
 
 export async function fetchAvailableModels() {
-  const routerCfg = getRouterConfig();
-  if (!routerCfg || !routerCfg.apiKey) return ['oa/mimo-v2.6-flash'];
-
+  const cfg = getRouterConfig();
+  if (!cfg.apiKey) return cfg.defaultModel ? [cfg.defaultModel] : [];
   try {
-    const res = await fetch(`${routerCfg.baseUrl}/models`, {
-      headers: { 'Authorization': `Bearer ${routerCfg.apiKey}` }
+    const res = await fetch(`${cfg.baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${cfg.apiKey}` }, signal: AbortSignal.timeout(10000)
     });
-    if (!res.ok) return ['oa/mimo-v2.6-flash'];
+    if (!res.ok) return [];
     const data = await res.json();
-    const all = (data.data || []).map(m => m.id);
-    // Filter model teks yang hidup di plan saat ini (diverifikasi via probe:
-    // mimo-v2.6-flash & glm-5.3 jawab OK; gemini/deepseek/qwen/claude/gpt 403
-    // model_not_available di plan free, deepseek-free 429 kuota habis).
-    // Model gambar (ali-*) dikecualikan: tidak bisa mengeluarkan JSON PRD.
-    const supported = all.filter(m =>
-      m.includes('mimo-v2.6-flash') || m === 'oa/glm-5.3'
-    );
-    return supported.length > 0 ? supported : ['oa/mimo-v2.6-flash'];
-  } catch (err) {
-    console.error('Failed to fetch models:', err.message);
-    return ['oa/mimo-v2.6-flash'];
-  }
+    const all = (Array.isArray(data.data) ? data.data : [])
+      .filter(m => m && typeof m.id === 'string' && m.id.trim())
+      // Discovery bukan jaminan kuota, tetapi model teks yang diiklankan
+      // harus tetap bisa dipilih (termasuk oa/gpt-6-astra).
+      .filter(m => !/image|embedding|rerank|whisper|tts|video|audio/i.test(m.id))
+      .map(m => m.id);
+    return all.length ? [...new Set(all)] : (cfg.defaultModel ? [cfg.defaultModel] : []);
+  } catch { return cfg.defaultModel ? [cfg.defaultModel] : []; }
 }
 
 // Router kadang menjawab dengan JSON biasa, kadang dengan format SSE
@@ -121,33 +115,42 @@ function parseRouterResponse(rawHttpText) {
 // dihubungi", padahal penyebab paling sering adalah kuota model habis.
 function routerErrorMessage(raw, action) {
   const text = String(raw || '');
-  // concurrent_limit dicek DULU sebelum pola 429 umum: sama-sama HTTP 429 tapi
-  // artinya beda (request lain masih jalan, bukan kuota habis). Kalau tertukar,
-  // pengguna disuruh ganti model padahal cukup tunggu sebentar.
-  if (/concurrent_limit|Batas request bersamaan/i.test(text)) {
+  // Status HTTP yang sudah dinormalisasi harus dideteksi lebih dulu.
+  // Fetch Error lokal boleh dipetakan ke koneksi; teks filter/validator
+  // tidak boleh berubah kategori karena kata "timeout"/"error" di dalamnya.
+  const hasHttpStatus = /HTTP\s+\d{3}/i.test(text);
+  if (hasHttpStatus && /concurrent_limit|Batas request bersamaan/i.test(text)) {
     return `Gagal ${action}: ada permintaan lain yang masih berjalan. Tunggu sebentar, lalu coba lagi.`;
   }
-  if (/429|free_shared_pool_exhausted|Kuota gratis/i.test(text)) {
+  if (hasHttpStatus && /429|free_shared_pool_exhausted|Kuota gratis/i.test(text)) {
     return `Gagal ${action}: kuota model AI yang dipilih sudah habis. ` +
       'Pilih model lain di pemilih model (di atas tombol Susun PRD), lalu coba lagi. ' +
       'Model gratis biasanya pulih besok pukul 00:00 WIB.';
   }
-  if (/403|model_not_available|tidak tersedia di plan/i.test(text)) {
+  if (hasHttpStatus && /500|502|503|504|provider_request_failed/i.test(text)) {
+    return `Gagal ${action}: layanan AI sedang bermasalah dan belum merespons tepat waktu. ` +
+      'Coba lagi sebentar lagi, atau pilih model lain di pemilih model.';
+  }
+  if (hasHttpStatus && /403|model_not_available|tidak tersedia di plan/i.test(text)) {
     return `Gagal ${action}: model yang dipilih tidak tersedia di langganan Anda. ` +
       'Pilih model lain di pemilih model, lalu coba lagi.';
   }
-  if (/402|insufficient|billing|saldo/i.test(text)) {
+  if (hasHttpStatus && /402|insufficient|billing|saldo/i.test(text)) {
     return `Gagal ${action}: saldo atau tagihan penyedia AI bermasalah. ` +
       'Periksa langganan router, lalu coba lagi.';
   }
-  if (/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|abort|502|504|connect timeout|Timeout/i.test(text)) {
+  if (text === 'provider_connection_failed') {
     return `Gagal ${action}: layanan AI tidak merespons tepat waktu (koneksi ke penyedia model bermasalah). ` +
       'Coba lagi sebentar lagi, atau pilih model lain di pemilih model.';
+  }
+  if (text === 'output_truncated') {
+    return `Gagal ${action}: jawaban model terlalu panjang dan terpotong, jadi tidak bisa disimpan. ` +
+      'Coba lagi, atau pilih model lain di pemilih model yang lebih hemat context.';
   }
   if (/is not valid JSON|Unexpected token|Expected property name|teks biasa, bukan JSON/i.test(text)) {
     return `Gagal ${action}: model ini menjawab dengan teks biasa, bukan format JSON yang dibutuhkan, ` +
       'sehingga hasilnya tidak bisa dibaca. Ini kelemahan model, bukan kesalahan Anda: ' +
-      'pilih model lain di pemilih model (disarankan oa/mimo-v2.6-flash), lalu coba lagi.';
+      'pilih model lain di pemilih model, lalu coba lagi.';
   }
   if (/content kosong|tidak mengembalikan isi jawaban/i.test(text)) {
     return `Gagal ${action}: model tidak mengirim isi jawaban sama sekali. Coba lagi, atau pilih model lain di pemilih model.`;
@@ -209,18 +212,29 @@ Format output WAJIB berupa JSON murni tanpa markdown wrapper:
 }
 `;
 
+function selectedModel(routerCfg, requested) {
+  const chosen = requested || routerCfg?.defaultModel;
+  if (!chosen) throw new Error('Belum ada model yang dipilih dan config default tidak tersedia.');
+  return chosen;
+}
+
 export async function generateClarifications(userIdea, name, model) {
   const routerCfg = getRouterConfig();
-  const chosenModel = model || routerCfg?.defaultModel || 'oa/mimo-v2.6-flash';
+  const chosenModel = selectedModel(routerCfg, model);
   let lastRouterError = '';
 
   if (routerCfg && routerCfg.apiKey) {
     try {
       console.log(`[AI-CLARIFY] Requesting to model: ${chosenModel}...`);
-      return await callRouter(
+      const result = await callRouter(
         routerCfg, chosenModel, CLARIFY_SYSTEM_PROMPT,
         `Nama Project: ${name || 'Belum ada'}\nIde: ${userIdea}`
       );
+      if (!result || !Array.isArray(result.questions) || result.questions.length < 3 || result.questions.length > 6 ||
+          result.questions.some(q => !q || typeof q.question !== 'string' || !q.question.trim() || !Array.isArray(q.options) || q.options.length < 2 || q.options.some(o => typeof o !== 'string' || !o.trim()))) {
+        throw new Error('Format pertanyaan klarifikasi tidak valid');
+      }
+      return result;
     } catch (err) {
       lastRouterError = err.message;
       console.error('[AI-CLARIFY] Error:', err.message);
@@ -260,7 +274,7 @@ ATURAN PALING PENTING (DILARANG DILANGGAR):
    - pencetakan (struk, invoice, label)
    - penanganan pembayaran / uang / refund
    - halaman/komponen UI yang dipakai user untuk fitur itu
-   Untuk SETIAP integrasi atau API eksternal: kamu WAJIB sedangun task khusus untuk mengimplementasikannya, task khusus untuk menerima webhook-nya kalau ada, dan task khusus untuk menguji alurnya dari ujung ke ujung (termasuk simulasi sandbox/notifikasi palsu).
+   Untuk SETIAP integrasi atau API eksternal: kamu WAJIB menulis SATU task khusus untuk mengimplementasikannya, task khusus untuk menerima webhook-nya kalau ada, dan task khusus untuk menguji alurnya dari ujung ke ujung (termasuk simulasi sandbox/notifikasi palsu).
    Sebelum menutup JSON, cek ulang: fitur -> endpoint -> task harus saling menutup. Tidak boleh ada fitur atau endpoint yang tidak punya task.
 
 3. SATU TASK = SATU PEKERJAAN YANG BISA DIBUKTIKAN SELESAI.
@@ -317,9 +331,9 @@ Struktur JSON:
 {
   "projectName": "Nama Resmi Aplikasi",
   "tagline": "Satu kalimat value proposition",
-  "summary": "Latar belakang, problem statement, siapa penggunanya, dan solusi sistem (2-3 paragraf, paragraf terakhir wajib diawali 'Asumsi:')",
+  "summary": "Latar belakang, problem statement, pengguna, dan solusi sistem (2-3 paragraf; asumsi, skala, dan batas lingkup ditulis natural)",
   "techStack": ["Teknologi lengkap dengan alasan singkat kenapa dipilih untuk aplikasi INI"],
-  "architectureOverview": "Wajib diawali 'Keputusan teknologi:' berisi alasan stack + teknologi yang ditolak dan alasannya, lalu lanjut penjelasan arsitektur: alur data, state management, strategi autentikasi, penanganan berkas, integrasi eksternal, dan kesiapan deploy",
+  "architectureOverview": "Alasan pemilihan stack + minimal satu alternatif yang ditolak, lalu alur data, state management, autentikasi, penanganan berkas, integrasi, keamanan, deploy, backup, dan risiko yang relevan",
   "features": [
     {
       "module": "Nama Modul",
@@ -358,156 +372,279 @@ Struktur JSON:
 
 Sesuaikan seluruh PRD dengan keputusan yang dipilih pengguna di klarifikasi. Kalau jawaban pengguna bertentangan dengan kebiasaan teknologi biasanya, IKUTI pengguna.
 ${designTemplatePromptBlock()}
+${getDesignGuidance()}
 `;
 
-const STOPWORDS = new Set([
-  'dan', 'atau', 'yang', 'untuk', 'dengan', 'pada', 'dari', 'ke', 'di', 'the',
-  'api', 'dan', 'serta', 'agar', 'bisa', 'dapat', 'saya', 'user', 'modul', 'fitur',
-  'sistem', 'aplikasi', 'halaman', 'data', 'baru', 'ini', 'itu', 'juga', 'akan'
-]);
+// Tahap 1 dipecah menjadi tiga panggilan (identitas, stack+arsitektur, rincian)
+// karena model gratis berhenti di tengah JSON saat diminta semua field sekali
+// (terukur: 200 OK tapi hanya sebagian kunci yang kembali). Masing-masing
+// panggilan kecil, jadi model menyelesaikan semuanya.
+// ponytail: gabung lagi bila model yang dipakai sudah mengembalikan seluruh
+// kunci pada satu panggilan gabungan di bawah 5000 completion token.
+const PRD_IDENTITY_SYSTEM_PROMPT = `
+Kamu Principal Software Architect & Head of Product. Tulis identitas produk dalam Bahasa Indonesia yang tegas, tanpa marketing. Hindari jargon tanpa penjelasan fungsi dalam kurung.
 
-function keywords(text) {
-  return String(text || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length > 3 && !STOPWORDS.has(w));
+Keluarkan HANYA JSON dengan tepat tiga kunci:
+{
+  "projectName": "Nama Resmi Aplikasi",
+  "tagline": "Satu kalimat value proposition",
+  "summary": "Latar belakang, problem, pengguna, solusi (2-3 paragraf)"
 }
 
-// Petunjuk kata kunci untuk sebuah fitur: dipakai untuk menebak apakah sudah
-// ada task yang mengerjakannya. Tiap entri: [nama, kata-kunci-pemicu].
-const FEATURE_HINTS = [
-  ['pembayaran', ['payment', 'bayar', 'qris', 'midtrans', 'xendit', 'stripe', 'checkout', 'invoice', 'refund']],
-  ['webhook', ['webhook', 'callback', 'notifikasi-pihak-ketiga', 'signature']],
-  ['notifikasi', ['notifikasi', 'notification', 'push', 'email', 'whatsapp', 'telegram', 'sms']],
-  ['ekspor/impor', ['export', 'ekspor', 'import', 'impor', 'excel', 'csv', 'pdf', 'cetak']],
-  ['unggah berkas', ['upload', 'unggah', 'berkas', 'file', 'storage', 's3', 'media', 'gambar', 'foto']],
-  ['autentikasi', ['auth', 'login', 'autentikasi', 'jwt', 'session', 'sesi', 'rbac', 'role', 'peran', 'hak-akses']],
-  ['realtime', ['realtime', 'websocket', 'socket', 'sse', 'live', 'langsung']],
-  ['laporan/analitik', ['laporan', 'report', 'analitik', 'analytics', 'dashboard', 'statistik', 'omset', 'laba']],
-  ['pencarian', ['search', 'pencarian', 'filter', 'cari']],
-  ['peta/lokasi', ['peta', 'maps', 'lokasi', 'geolocation', 'gps']],
-  ['pembayaran-berlangganan', ['subscription', 'langganan', 'billing', 'plan']],
-];
+Isi summary dengan: tujuan, pengguna utama, metrik terukur (atau usulan), asumsi, ukuran/skala sebagai kalimat natural ("tiga pengguna", bukan hanya label), dan hal yang sengaja di luar lingkup. Deteksi CLI/bot/API/library tanpa UI dari brief dan nyatakan itu. Jangan mengarang metrik, dependency, atau integrasi luar kebutuhan.
 
-function isFeatureCovered(feature, taskText) {
-  const haystack = keywords(taskText).join(' ');
-  const modWords = keywords(feature.module);
-  if (modWords.length > 0 && modWords.filter(w => haystack.includes(w)).length >= Math.ceil(modWords.length * 0.6)) {
-    return true;
-  }
-  // Cek apakah fitur menyebut kata kunci domain tertentu, dan task juga.
-  const featText = `${feature.module || ''} ${feature.description || ''} ${(feature.acceptanceCriteria || []).join(' ')}`.toLowerCase();
-  for (const [, triggers] of FEATURE_HINTS) {
-    const featHas = triggers.some(t => featText.includes(t));
-    if (!featHas) continue;
-    const taskHas = triggers.some(t => haystack.includes(t.replace(/-/g, ' ')) || haystack.includes(t));
-    if (!taskHas) return false; // fitur butuh hal ini, tapi tidak ada task yang menyentuhnya
-  }
-  return true;
+Jangan menulis field lain. Jangan menulis catatan, rencana, atau markdown. Langsung JSON dan tutup dengan }.
+`;
+
+// Tahap 1b: stack + arsitektur. Dipecah dari 1c karena model gratis berhenti
+// setelah ~2 kunci saat diminta 5 kunci sekaligus (terukur: 200 OK tapi hanya
+// techStack + architectureOverview, features/db/api tidak pernah datang).
+const PRD_CORE_SYSTEM_PROMPT = `
+Kamu Principal Software Architect & Lead Engineer. Bahasa Indonesia tegas, tanpa marketing.
+
+PILIH TEKNOLOGI dari kebutuhan, bukan dari kebiasaan. Deteksi CLI/bot/API/library tanpa UI dari brief; jangan menambahkan frontend, login, atau Design System untuk kasus itu. Pilih stack berdasarkan realtime/offline, perangkat, data, konkurensi, dan skala. Skala dari klarifikasi harus terlihat sebagai ukuran natural. Kelebihan teknologi untuk aplikasi kecil adalah cacat.
+
+Keluarkan HANYA JSON dengan tepat dua kunci:
+{
+  "techStack": ["Teknologi + alasan singkat untuk aplikasi INI"],
+  "architectureOverview": "Alasan pilihan stack dan minimal satu alternatif yang ditolak, lalu alur data, autentikasi dan otorisasi server-side, penanganan berkas, keamanan (secret hanya di environment server-side, HTTPS untuk deployment web), backup/restore, serta risiko dan tradeoff yang relevan untuk aplikasi ini"
 }
 
-// Validator: menolak PRD yang tidak lengkap. Dipakai untuk memicu retry sekali,
-// supaya "tidak ada fitur yang miss" jadi jaminan, bukan harapan.
-export function validatePRD(prd) {
+architectureOverview ditulis 2-4 paragraf. Jangan tulis field lain. Jangan menulis catatan atau rencana. Langsung JSON dan tutup dengan }.
+`;
+
+// Tahap 1c: fitur, skema DB, endpoint.
+const PRD_DETAIL_SYSTEM_PROMPT = `
+Kamu Principal Software Architect yang menulis spesifikasi rinci. Bahasa Indonesia tegas, tanpa marketing.
+
+Setiap fitur punya minimal 2 acceptanceCriteria yang bisa diuji, termasuk alur gagal atau edge case. Setiap tabel memiliki fields konkret (tipe, constraint, relasi). Setiap endpoint menyebut input, output, autentikasi/otorisasi dan status error pada description. Nama modul, tabel, dan endpoint harus sama persis di seluruh dokumen. Jangan menambah fitur di luar keputusan pengguna.
+
+Keluaran HANYA JSON dengan tepat tiga kunci:
+{
+  "features": [
+    {
+      "module": "Nama Modul",
+      "description": "Deskripsi fungsional lengkap",
+      "userStories": ["Sebagai [role], saya ingin [tindakan] sehingga [manfaat]"],
+      "acceptanceCriteria": ["Kriteria spesifik yang bisa diuji, minimal 2 per modul termasuk alur gagal atau edge case"],
+      "edgeCases": ["Kasus ekstrem / error"]
+    }
+  ],
+  "databaseSchema": [{ "table": "nama_tabel", "description": "Fungsi tabel", "fields": ["id TEXT PRIMARY KEY", "..."] }],
+  "apiEndpoints": [{ "method": "GET | POST | PATCH | DELETE", "path": "/api/v1/...", "description": "Fungsi + siapa boleh akses + status error", "payload": "{ ... }", "response": "{ ... }" }]
+}
+
+3-6 modul fitur. Tulis "Tidak berlaku (tanpa antarmuka)" untuk DB/API pada CLI, bot statis, atau library yang memang tidak membutuhkannya, dan array tetap kosong. Jangan menulis field lain. Jangan berhenti sebelum JSON ditutup.
+`;
+
+// Tahap 2 dari generate 2-tahap: terima skeleton tahap 1, keluarkan HANYA tasks.
+const PRD_TASKS_SYSTEM_PROMPT = `
+Kamu adalah Lead Engineer. Tugasmu: dari kerangka PRD (JSON) + ide + klarifikasi di bawah, susun daftar task eksekusi untuk AI Coding Agent. Keluarkan HANYA {"tasks": [...]}.
+
+ATURAN:
+1. COVERAGE EKSPLISIT: setiap modul features wajib punya task dengan field module persis sama. Setiap integrasi, webhook/callback, ekspor/impor, notifikasi, auth/RBAC, upload, cetak, pembayaran/refund, dan UI yang benar-benar ada wajib punya task implementasi; bila ada webhook, buat task penerimaan terpisah; integrasi juga wajib punya verifikasi sandbox/alur sukses dan gagal. Bot/CLI/API/library tanpa UI tidak boleh mendapat task frontend, login, atau design system.
+2. SATU TASK = SATU PEKERJAAN TERBUKTI. Task boleh digabung bila terkait kuat, tetapi setiap task harus punya file path konkret, logic + error handling, dan bukti. Jangan memakai task generik seperti "buat backend" atau "testing".
+3. UKURAN SESUAI SKALA. Jangan memaksa 8-15 task: gunakan jumlah secukupnya. Project kecil boleh 3-5 task; project besar dipecah per endpoint, layar, integrasi, atau lapisan. Tetap sertakan pondasi, tiap coverage wajib, E2E alur utama, dan production readiness bila relevan.
+4. module tiap task WAJIB nama modul dari features. Tabel dan endpoint harus muncul persis dalam spec task penanggung jawab.
+5. spec WAJIB memuat: Tujuan; File; Dependensi: TASK-xx atau "tidak ada"; Implementasi; Error/edge case; Kriteria selesai; Verifikasi. Tulis "Dependensi:" eksplisit karena machine-readable server hanya menyimpan spec. ID unik TASK-01 dst dan dependensi hanya ke task sebelumnya.
+6. Salin keputusan keamanan, a11y, desain, dan out-of-scope dari kerangka ke langkah kerja serta bukti. Untuk UI buktikan keyboard/focus/reader, kontras, failure/empty state, responsif, dan reduced-motion. Jangan menambah motion, dependency, atau fitur yang tidak diperlukan.
+
+Keluarkan HANYA JSON murni tanpa markdown:
+{
+  "tasks": [
+    {
+      "id": "TASK-01",
+      "title": "Judul task spesifik & actionable",
+      "module": "Nama Modul (persis dari daftar)",
+      "priority": "HIGH | MEDIUM | LOW",
+      "spec": "File path, dependensi, logic + error handling, cara membuktikan selesai."
+    }
+  ]
+}
+`;
+
+function hasUIRequirement(prd) {
+  const core = [prd.summary, prd.architectureOverview, ...(Array.isArray(prd.techStack) ? prd.techStack : [])].join(' ');
+  if (/(?:tanpa|tidak ada|tidak memakai|non)\s+(?:UI|antarmuka|frontend|web|browser)|(?:without|no)\s+(?:UI|interface|frontend|web)/i.test(core)) return false;
+  return /antarmuka|\bUI\b|frontend|web app|website|browser|desktop app|sistem desain|design system|Next\.js|React Native|\breact\b|\bvue\b|\bsvelte\b|tailwind/i.test(core);
+}
+
+function hasScaleEvidence(prd) {
+  const text = [prd.summary, prd.architectureOverview].join(' ');
+  return /\b(?:kecil|sedang|besar|sangat besar|small|medium|large)\b/i.test(text) ||
+    /(?:\d+|[satu dua tiga empat lima enam tujuh delapan sembilan sepuluh]+)\s*(?:pengguna|user|transaksi|permintaan|request|surat|record|data)/i.test(text);
+}
+
+function hasOutOfScopeEvidence(prd) {
+  const text = [prd.summary, prd.architectureOverview].join(' ');
+  return /di luar lingkup|tidak termasuk|tidak dikecualikan|bukan bagian|tanpa fitur|beyond scope|out[ -]of[ -]scope|excluded|exclude|does not include|tidak mencakup|tidakakui|\b(?:tidak|bukan)\b[^.]{0,80}\b(?:dalam|ke)\s+lingkup/i.test(text);
+}
+
+function hasSecurityEvidence(prd) {
+  const text = [prd.summary, prd.architectureOverview, ...(Array.isArray(prd.techStack) ? prd.techStack : [])].join(' ');
+  return /validasi|validation|sanitize|otorisasi|authorization|auth|rbac|secret|rahasia|credential|https|tls|rate limit|input|jaringan|server.side/i.test(text);
+}
+
+function hasFilePath(spec) {
+  return /\b(?:file|path)\s*:\s*[^\n]*(?:^|[\s`])[\w.-]+(?:\/[\w.-]+)+\.(?:js|ts|tsx|jsx|py|go|rs|java|kt|sql|css|html|json|yaml|yml|md|sh)\b|(?:^|[\s`])[\w.-]+(?:\/[\w.-]+)+\.(?:js|ts|tsx|jsx|py|go|rs|java|kt|sql|css|html|json|yaml|yml|md|sh)\b/i.test(spec);
+}
+
+function hasDependencyValue(spec) {
+  const line = spec.match(/(?:Dependensi|Prasyarat|dependsOn)\s*:\s*([^\n]*)/i)?.[1] || '';
+  return /\bTASK-\d+\b/i.test(line) || /(?:tidak ada|none|nol|tanpa dependensi)/i.test(line);
+}
+
+function hasDoneEvidence(spec) {
+  return /kriteria\s+selesai|definisi\s+selesai|definition\s+of\s+done|acceptance\s+criteria|syarat\s+selesai/i.test(spec);
+}
+
+function hasSemanticFailure(text) {
+  return /gagal|error|invalid|tidak valid|kosong|null|unknown|tidak dikenal|ditolak|terhenti|timeout|limit|penuh|duplikat|tidak sah|terlarang|edge|batas|fallback|rollback|recover|pulih|overflow|terpotong|terhalang|tidak dapat dikembalikan/i.test(text);
+}
+function taskDependencies(spec) {
+  const line = spec.match(/(?:Dependensi|Prasyarat|dependsOn)\s*:\s*([^\n]+)/i)?.[1] || '';
+  return [...line.matchAll(/\bTASK-\d+\b/gi)].map(match => match[0].toUpperCase());
+}
+
+function requiredFeatureCapabilities(feature) {
+  const text = `${feature.module || ''} ${feature.description || ''} ${(feature.acceptanceCriteria || []).join(' ')}`.toLowerCase();
+  const rules = [
+    [/webhook|callback/, /webhook|callback/],
+    [/payment|bayar|qris|midtrans|xendit|stripe|refund|pembayaran/, /payment|bayar|qris|midtrans|xendit|stripe|refund|pembayaran/],
+    [/upload|unggah|storage|berkas|file|gambar|media/, /upload|unggah|storage|berkas|file|gambar|media/],
+    [/ekspor|export|impor|import|cetak|print/, /ekspor|export|impor|import|cetak|print/],
+    [/notifikasi|notification|push|whatsapp|telegram|email|sms/, /notifikasi|notification|push|whatsapp|telegram|email|sms/],
+    [/rbac|role|hak akses|multi user|multi-user/, /rbac|role|hak akses|multi user|multi-user/]
+  ];
+  return rules.filter(([featurePattern]) => featurePattern.test(text));
+}
+
+// Validator: menolak PRD yang tidak lengkap. Pemeriksaan memakai makna dan
+// relasi antar-field, bukan label prosa tertentu, agar variasi ejaan model
+// tidak memicu penolakan palsu.
+export function validatePRD(prd, stage = 'full') {
   const problems = [];
+  const skeletonStage = stage === 'skeleton';
   if (!prd || typeof prd !== 'object') return ['output bukan objek JSON'];
-  const tasks = Array.isArray(prd.tasks) ? prd.tasks : [];
+
   const features = Array.isArray(prd.features) ? prd.features : [];
+  const tasks = skeletonStage ? [] : (Array.isArray(prd.tasks) ? prd.tasks : []);
+  const techStack = Array.isArray(prd.techStack) ? prd.techStack : [];
+  const summary = String(prd.summary || '').trim();
+  const architecture = String(prd.architectureOverview || '').trim();
+  const name = String(prd.projectName || prd.name || '').trim();
 
-  if (!Array.isArray(prd.techStack) || prd.techStack.length === 0) {
-    problems.push('techStack kosong');
-  }
-  if (tasks.length < 6) {
-    problems.push(`jumlah task terlalu sedikit (${tasks.length}, minimal 6)`);
-  }
-  if (features.length === 0) {
-    problems.push('tidak ada modul fitur');
-  }
-  if (!prd.architectureOverview || String(prd.architectureOverview).trim().length < 50) {
-    problems.push('architectureOverview kosong/terlalu pendek');
-  } else if (!/keputusan teknologi/i.test(prd.architectureOverview)) {
-    problems.push('architectureOverview tidak diawali alasan "Keputusan teknologi:"');
-  }
-  if (!prd.summary || !/asumsi/i.test(prd.summary)) {
-    problems.push('summary tidak memuat bagian "Asumsi:"');
-  }
-  if (!prd.summary || !/skala\s*:/i.test(prd.summary)) {
-    problems.push('summary tidak menyebut pilihan "Skala:" (kecil/sedang/besar/sangat besar)');
+  if (!techStack.length || techStack.some(item => typeof item !== 'string' || !item.trim())) problems.push('techStack kosong atau tidak valid');
+  if (!name) problems.push('nama proyek kosong');
+  if (!features.length) problems.push('tidak ada modul fitur');
+  if (summary.length < 80) problems.push('summary kosong/terlalu pendek');
+  if (architecture.length < 80) problems.push('architectureOverview kosong/terlalu pendek');
+  if (!hasScaleEvidence(prd)) problems.push('summary/architecture tidak menjelaskan skala atau volume');
+  if (!hasOutOfScopeEvidence(prd)) problems.push('ringkasan tidak menjelaskan batas lingkup');
+  if (!hasSecurityEvidence(prd)) problems.push('arsitektur tidak memuat kontrol keamanan atau validasi input yang relevan');
+  if (architecture && !/(?:karena|alasan|reason|reasoning|memilih|dipilih|menggunakan|digunakan|pakai|choose|chosen|select|selected|because)\b/i.test(architecture)) problems.push('architectureOverview tidak menjelaskan alasan pilihan teknologi');
+  if (architecture && !/(?:ditolak|tidak dipilih|dihindari|bukan|alternatif|rejected|avoid|avoided|instead)\b/i.test(architecture)) problems.push('architectureOverview tidak menjelaskan alternatif yang ditolak');
+
+  if (features.some(feature => !feature || typeof feature !== 'object')) return [...problems, 'task/fitur harus berupa objek, bukan null'];
+  const featureModules = [];
+  for (const feature of features) {
+    if (typeof feature.module !== 'string' || !feature.module.trim() || !String(feature.description || '').trim() || !Array.isArray(feature.acceptanceCriteria) || feature.acceptanceCriteria.length < 2 || feature.acceptanceCriteria.some(criterion => typeof criterion !== 'string' || !criterion.trim())) {
+      problems.push('fitur harus berisi module, description dan minimal 2 acceptanceCriteria');
+      continue;
+    }
+    if (!hasSemanticFailure(feature.acceptanceCriteria.join(' ') + ' ' + String(feature.edgeCases || ''))) {
+      problems.push(`fitur "${feature.module}" perlu acceptanceCriteria atau edgeCases untuk alur gagal`);
+    }
+    if (featureModules.some(module => module.toLowerCase() === feature.module.trim().toLowerCase())) problems.push(`modul fitur duplikat: ${feature.module}`);
+    else featureModules.push(feature.module.trim());
   }
 
-  const taskText = tasks.map(t => `${t.title || ''} ${t.spec || ''} ${t.module || ''}`).join(' ').toLowerCase();
+  if (!Array.isArray(prd.databaseSchema) || !Array.isArray(prd.apiEndpoints)) {
+    problems.push('databaseSchema/apiEndpoints harus array (boleh kosong jika tidak berlaku)');
+    return problems;
+  }
+  for (const table of prd.databaseSchema) {
+    if (!table || typeof table.table !== 'string' || !table.table.trim() || !Array.isArray(table.fields) || !table.fields.length || table.fields.some(field => typeof field !== 'string' || !field.trim())) {
+      problems.push('tabel harus memiliki nama dan fields konkret');
+    }
+  }
+  for (const endpoint of prd.apiEndpoints) {
+    if (!endpoint || !/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(endpoint.method || '') || !String(endpoint.path || '').startsWith('/') || !String(endpoint.description || '').trim()) {
+      problems.push('endpoint harus memiliki method, path dan kontrak description');
+    }
+  }
 
-  // Setiap task WAJIB punya field module, dan nama modul harus cocok dengan fitur.
-  const featureModules = features.filter(f => f && f.module).map(f => f.module);
-  const taskModules = tasks.map(t => (t && t.module ? String(t.module).trim() : ''));
-  tasks.forEach((t, i) => {
-    if (!t || !t.module || !String(t.module).trim()) {
-      problems.push(`task "${(t && t.title) || '#' + (i + 1)}" tidak mengisi field "module"`);
+  const hasUI = hasUIRequirement(prd);
+  const designFeature = features.find(feature => /design system|desain antarmuka|sistem desain|design token/i.test(feature.module || ''));
+  if (hasUI && !designFeature) problems.push('tidak ada modul Design System padahal aplikasi punya antarmuka');
+  if (!hasUI && designFeature) problems.push('Design System tidak boleh ditambahkan pada produk tanpa antarmuka');
+  if (hasUI && designFeature) {
+    const text = JSON.stringify(designFeature);
+    const colorCount = (text.match(/#[0-9a-f]{3,8}\b|oklch\s*\(/gi) || []).length;
+    if (colorCount < 3) problems.push('Design System belum memberi token warna konkret');
+    if (!/font|typography|line.height/i.test(text)) problems.push('Design System belum memberi token typography');
+    if (!/spacing|space|gap|padding|\d+(?:px|rem)/i.test(text)) problems.push('Design System belum memberi spacing konkret');
+    if (!/radius|border|shadow/i.test(text)) problems.push('Design System belum memberi bentuk atau treatment konkret');
+    if (!/keyboard|tab order|focus|screen reader|reader|kontras|wcag|alt text|label/i.test(text)) problems.push('Design System belum memuat bukti aksesibilitas');
+    if (!/loading|error|empty|keadaan kosong|kesalahan/i.test(text)) problems.push('Design System belum memuat state UI penting');
+    if (/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(text)) problems.push('Design System memakai emoji sebagai ikon');
+  }
+
+  if (skeletonStage) return problems;
+
+  if (!Array.isArray(prd.tasks)) {
+    problems.push('tasks harus berupa array');
+    return problems;
+  }
+  if (!tasks.length) {
+    problems.push('tidak ada task implementasi');
+    return problems;
+  }
+  if (tasks.some(task => !task || typeof task !== 'object')) return [...problems, 'task harus berupa objek, bukan null'];
+
+  const ids = new Set();
+  const taskModules = [];
+  tasks.forEach((task, index) => {
+    const id = typeof task.id === 'string' ? task.id.trim() : '';
+    const title = String(task.title || '').trim();
+    const module = typeof task.module === 'string' ? task.module.trim() : '';
+    const spec = String(task.spec || '').trim();
+    if (!/^TASK-\d{2,}$/.test(id) || ids.has(id)) problems.push(`ID task ${id || index + 1} tidak valid atau duplikat`);
+    if (!title || title.length < 8) problems.push(`task ${id || index + 1} tidak punya judul yang bisa langsung dikerjakan`);
+    if (!module) problems.push(`task ${id || index + 1} tidak mengisi field "module"`);
+    if (!spec || spec.length < 120) problems.push(`spec task ${id || index + 1} kosong/terlalu pendek`);
+    if (spec && !hasFilePath(spec)) problems.push(`task ${id || index + 1} tidak menyebut file path konkret`);
+    if (spec && !hasDependencyValue(spec)) problems.push(`task ${id || index + 1} tidak mengisi dependensi secara eksplisit`);
+    if (spec && !hasDoneEvidence(spec)) problems.push(`task ${id || index + 1} tidak punya kriteria selesai/definisi done`);
+    if (spec && !/verifikasi|pengujian|test|uji|curl|mandatory|bukti/i.test(spec)) problems.push(`task ${id || index + 1} tidak punya cara verifikasi`);
+    if (spec && !/error|gagal|edge|failure|fallback|validasi|exception/i.test(spec)) problems.push(`task ${id || index + 1} tidak menjelaskan penanganan error/edge case`);
+    if (id) ids.add(id);
+    if (module) taskModules.push(module);
+    for (const dependency of taskDependencies(spec)) {
+      if (dependency === id || !ids.has(dependency)) problems.push(`dependensi ${dependency} pada ${id || index + 1} belum ada atau melingkar`);
     }
   });
 
-  // Setiap modul fitur wajib punya minimal satu task dengan nama modul sama persis.
-  for (const mod of featureModules) {
-    const hasExact = taskModules.some(tm => tm.toLowerCase() === mod.toLowerCase());
-    if (!hasExact) {
-      problems.push(`modul "${mod}" tidak punya task dengan field "module" yang sama persis`);
+  for (const module of featureModules) {
+    if (!taskModules.some(taskModule => taskModule.toLowerCase() === module.toLowerCase())) problems.push(`modul "${module}" tidak punya task dengan field "module" yang sama persis`);
+  }
+  for (const module of taskModules) {
+    if (!featureModules.some(featureModule => featureModule.toLowerCase() === module.toLowerCase())) problems.push(`task memakai module "${module}" yang tidak ada di features`);
+  }
+  for (const feature of features) {
+    if (!feature?.module) continue;
+    const assigned = tasks.filter(task => String(task.module || '').trim().toLowerCase() === String(feature.module).trim().toLowerCase()).map(task => `${task.title || ''} ${task.spec || ''}`).join(' ').toLowerCase();
+    for (const [, taskPattern] of requiredFeatureCapabilities(feature)) {
+      if (!taskPattern.test(assigned)) problems.push(`fitur "${feature.module}" tidak punya task untuk kemampuan yang disebut`);
     }
   }
-
-  for (const f of features) {
-    if (!f || !f.module) {
-      problems.push('ada fitur tanpa nama modul');
-      continue;
-    }
-    if (!isFeatureCovered(f, taskText)) {
-      problems.push(`fitur "${f.module}" tidak punya task implementasi yang jelas`);
-    }
+  for (const table of prd.databaseSchema) {
+    if (!tasks.some(task => String(task.spec || '').includes(table.table))) problems.push(`tabel ${table.table} belum tercakup task`);
   }
-
-  // Design system: kalau aplikasi punya antarmuka, wajib ada modul design system
-  // yang isinya nilai konkret, bukan kata sifat.
-  const hasUI = featureModules.some(m => /ui|antarmuka|halaman|tampilan|portal|dashboard|frontend|layar/i.test(m));
-  if (hasUI) {
-    const dsFeature = features.find(f => f && f.module && /design system|desain antarmuka|sistem desain|design token/i.test(f.module));
-    if (!dsFeature) {
-      problems.push('tidak ada modul "Design System" padahal aplikasi punya antarmuka');
-    } else {
-      const dsText = JSON.stringify(dsFeature);
-      const hexes = dsText.match(/#[0-9a-fA-F]{6}/g) || [];
-      if (hexes.length < 6) {
-        problems.push(`modul Design System hanya memuat ${hexes.length} warna HEX (butuh minimal 6, disalin dari template)`);
-      }
-      if (!/reading this as|template|presisi|hangat|kepercayaan|data|utilitas|ekspresif/i.test(dsText)) {
-        problems.push('modul Design System tidak menyebut template yang dipilih + alasan');
-      }
-      if (!/reduced-motion|150|200|250|ms\b/i.test(dsText)) {
-        problems.push('modul Design System tidak memuat aturan motion (duration/reduced-motion)');
-      }
-      // Larangan anti-generik di teks desain.
-      if (/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(dsText)) {
-        problems.push('modul Design System memakai emoji (dilarang sebagai ikon)');
-      }
-      if (/\u2014|\u2013/.test(dsText)) {
-        problems.push('modul Design System memakai tanda pisah panjang (em-dash/en-dash)');
-      }
-      if (/\d+\s*(?:px|rem)[^.]*?space/i.test(dsText) === false && !/\b(?:4|8|12|16|24|32|48)\s*px\b/.test(dsText)) {
-        problems.push('modul Design System tidak menyebut skala spacing dalam px');
-      }
-    }
+  for (const endpoint of prd.apiEndpoints) {
+    if (!tasks.some(task => String(task.spec || '').includes(endpoint.path) && new RegExp(`\\b${endpoint.method}\\b`, 'i').test(task.spec))) problems.push(`endpoint ${endpoint.method} ${endpoint.path} belum tercakup task`);
+    if (/webhook|callback/i.test(endpoint.path) && !tasks.some(task => /webhook|callback/i.test(task.spec || ''))) problems.push(`endpoint ${endpoint.method} ${endpoint.path} tidak punya task penerimaan`);
   }
-
-  // Endpoint penting tanpa task.
-  const endpoints = Array.isArray(prd.apiEndpoints) ? prd.apiEndpoints : [];
-  for (const ep of endpoints) {
-    const pathWords = keywords((ep.path || '').replace(/[:/{]/g, ' '));
-    if (pathWords.length === 0) continue;
-    // Endpoint webhook wajib punya task webhook.
-    if (/webhook|callback/i.test(ep.path || '') && !/webhook|callback/i.test(taskText)) {
-      problems.push(`endpoint "${ep.method} ${ep.path}" (webhook) tidak punya task penerimaan`);
-    }
-  }
-
   return problems;
 }
 
@@ -519,135 +656,248 @@ PRD sebelumnya gagal pemeriksaan otomatis karena masalah berikut:
 
 Perbaiki SEMUA masalah di atas. Pastikan untuk SETIAP modul pada "features" ada minimal satu task di "tasks" yang menyebut modul tersebut (isi field "module" pada task dengan nama modul yang sama persis). Setiap integrasi pihak ketiga dan webhook wajib punya task sendiri. Keluarkan JSON lengkap yang sudah diperbaiki.`;
 
-async function callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt = 1) {
+async function callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt = 1, busyIdx = 0, omitJsonMode = false) {
+  // Batas 420 dtk per panggilan. Tahap 1 menulis PRD penuh (ringkasan,
+  // arsitektur, DB, endpoint) dan free model butuh 150-300 dtk; batas lama
+  // membuat panggilan yang normal terbaca sebagai "koneksi gagal".
+  // ponytail: turunkan ke 180 dtk setelah semua model lolos <120 dtk.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 420000);
   let res;
+  // Router FREE melakukan cache prompt: dua panggilan dengan system prompt
+  // mirip dijawab ulang dari cache, sehingga panggilan "inti teknis" menerima
+  // jawaban "identitas" (kunci projectName/tagline/summary). Nonce pendek per
+  // panggilan memutus cache tanpa mengubah isi prompt.
+  // ponytail: hapus kalau router berhenti melakukan cache.
+  const callId = `req-${chosenModel}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+  const payload = {
+    model: chosenModel,
+    messages: [
+      { role: 'system', content: `${systemPrompt}\n\n[ref:${callId}]` },
+      { role: 'user', content: userPrompt }
+    ],
+    temperature: 0.2,
+    // Tanpa batas eksplisit, router memotong keluaran sendiri di tengah
+    // JSON (selamat: "menangani tig"), lalu validator melapor field hilang
+    // seolah model salah. Batas longgar + deteksi finish_reason di bawah.
+    max_tokens: 16000
+  };
+  // Minta JSON mode bila mendukung. Model gratis yang tidak mendukungnya
+  // diulang sekali tanpa field ini, lalu tetap divalidasi secara lokal.
+  if (!omitJsonMode) payload.response_format = { type: 'json_object' };
   try {
     res = await fetch(`${routerCfg.baseUrl}/chat/completions`, {
+      signal: controller.signal,
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${routerCfg.apiKey}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        model: chosenModel,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        temperature: 0.2,
-        // Minta penyedia memaksa keluaran JSON bila didukung. Sebagian router
-        // mengabaikan field ini, jadi hasilnya tetap divalidasi di bawah.
-        response_format: { type: 'json_object' }
-      })
+      body: JSON.stringify(payload)
     });
+    var rawText = await res.text();
   } catch (fetchErr) {
-    // Koneksi ke router putus/timeout: coba sekali lagi sebelum menyerah.
+    // Jangan meneruskan pesan fetch mentah: bisa memuat URL internal atau detail provider.
+    if (process.env.PRDMAKER_DEBUG_RAW) {
+      fs.appendFileSync(process.env.PRDMAKER_DEBUG_RAW, `\n[fetchErr attempt=${attempt}] ${fetchErr.name}: ${fetchErr.message} cause=${fetchErr.cause?.code || fetchErr.cause?.message || '-'}\n`);
+    }
     if (attempt === 1) {
       console.warn('[AI] Koneksi ke router gagal, mengulang sekali...');
       await new Promise(r => setTimeout(r, 2000));
-      return await callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt + 1);
+      return await callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt + 1, busyIdx, omitJsonMode);
     }
-    throw fetchErr;
+    throw Object.assign(new Error('provider_connection_failed'), { cause: fetchErr });
+  } finally {
+    clearTimeout(timer);
   }
-  const rawText = await res.text();
   if (!res.ok) {
-    // Error sementara dari penyedia (502/504/timeout upstream, atau request lain
-    // masih jalan): tunggu sebentar lalu coba sekali lagi, bukan langsung gagal.
-    // ponytail: retry 1x dengan jeda 3 dtk; tambah bila model sering 502 beruntun.
-    if (attempt === 1 && /50[234]|concurrent_limit|Batas request bersamaan|connect timeout|Timeout|ETIMEDOUT/i.test(rawText)) {
-      console.warn(`[AI] Router HTTP ${res.status} (sementara), mengulang sekali setelah jeda...`);
-      await new Promise(r => setTimeout(r, 3000));
-      return await callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt + 1);
+    if (!omitJsonMode && res.status === 400 && /response_format|json[_ -]?mode|unsupported.*param|unknown.*param/i.test(rawText)) {
+      console.warn('[AI] Model tidak mendukung JSON mode, mengulang tanpa response_format...');
+      return await callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt, busyIdx, true);
     }
-    throw new Error(`Router HTTP ${res.status}: ${rawText}`);
+    // Error sementara dari penyedia (502/504/timeout upstream): tunggu lalu
+    // coba lagi. Free model sering 502 beruntun saat dua panggilan besar
+    // beruntun, jadi tiga percobaan dengan jeda memanjang.
+    // ponytail: turunkan ke 1x retry setelah model target stabil <1%.
+    if (attempt <= 3 && ([500, 502, 503, 504].includes(res.status) || /connect timeout|Timeout|ETIMEDOUT/i.test(rawText))) {
+      const backoffMs = 3000 * attempt;
+      console.warn(`[AI] Router HTTP ${res.status} (sementara), mengulang ${attempt}/3 setelah jeda...`);
+      await new Promise(r => setTimeout(r, backoffMs));
+      return await callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt + 1, busyIdx, omitJsonMode);
+    }
+    // Antrean penuh (limit 1 request bersamaan per key): ini BUKAN kegagalan,
+    // hanya slot sibuk. Satu key dipakai beberapa klien (UI, CLI, live test),
+    // jadi tunggutotal harus melebihi durasi satu permintaan terpanjang.
+    // ponytail: 6x coba (10..120 dtk); turunkan lagi bila key dipakai 1 klien.
+    if (/concurrent_limit|Batas request bersamaan/i.test(rawText) && busyIdx < 6) {
+      const waitMs = [10000, 20000, 40000, 60000, 90000, 120000][busyIdx];
+      console.warn(`[AI] Slot router sibuk, tunggu ${waitMs / 1000} dtk lalu coba lagi (${busyIdx + 1}/6)...`);
+      await new Promise(r => setTimeout(r, waitMs));
+      return await callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt, busyIdx + 1, omitJsonMode);
+    }
+    throw new Error(`Router HTTP ${res.status}: ${/concurrent_limit|Batas request bersamaan/i.test(rawText) ? 'concurrent_limit' : 'provider_request_failed'}`);
   }
   const routerJson = parseRouterResponse(rawText);
-  const rawContent = routerJson.choices?.[0]?.message?.content;
+  const choice = routerJson.choices?.[0];
+  const rawContent = choice?.message?.content;
   if (!rawContent || typeof rawContent !== 'string') {
     throw new Error('Model tidak mengembalikan isi jawaban (content kosong)');
   }
+  // Potongan keluaran = batas token, bukan kesalahan isi. Kembalikan error
+  // khusus supaya pemanggil memperpanjang anggaran, bukan menyalahkan model.
+  if (choice?.finish_reason === 'length') {
+    throw Object.assign(new Error('output_truncated'), { rawContent });
+  }
   const jsonText = extractJSON(rawContent);
+  if (process.env.PRDMAKER_DEBUG_RAW) {
+    fs.appendFileSync(process.env.PRDMAKER_DEBUG_RAW,
+      `\n===== ${chosenModel} ${new Date().toISOString()} finish=${choice?.finish_reason} usage=${JSON.stringify(routerJson.usage || null)} =====\n${rawContent}\n`);
+  }
   try {
     return JSON.parse(jsonText);
   } catch {
     // Model menjawab dengan prosa/markdown, bukan JSON. Coba sekali lagi dengan
-    // peringatan tegas: sebagian model (mis. deepseek-v4.1-flash) butuh ini.
+    // peringatan tegas: sebagian model butuh ini.
     if (attempt === 1) {
       console.warn('[AI] Jawaban bukan JSON, mengulang sekali dengan instruksi tegas...');
       const strict = userPrompt + `
 
 === PERINGATAN FORMAT (WAJIB) ===
 Jawaban sebelumnya ditolak karena berisi teks/markdown, bukan JSON. Jangan menulis judul, penjelasan, atau kalimat apa pun di luar JSON. Jangan memakai pagar kode \`\`\`. Karakter pertama jawabanmu HARUS "{" dan karakter terakhir HARUS "}". Keluarkan JSON lengkap sekarang.`;
-      return await callRouter(routerCfg, chosenModel, systemPrompt, strict, attempt + 1);
+      return await callRouter(routerCfg, chosenModel, systemPrompt, strict, attempt + 1, busyIdx, omitJsonMode);
     }
-    const head = rawContent.trim().slice(0, 40).replace(/\s+/g, ' ');
-    throw new Error(`Model menjawab dengan teks biasa, bukan JSON (diawali "${head}"). Jawaban tidak bisa dibaca.`);
+    throw new Error('Model menjawab dengan teks biasa, bukan JSON. Jawaban tidak bisa dibaca.');
   }
 }
 
-export async function generatePRDFromPrompt(userIdea, name, clarifications = [], model) {
+export async function generatePRDFromPrompt(userIdea, name, clarifications = [], model, designDirection) {
   const routerCfg = getRouterConfig();
-  const chosenModel = model || routerCfg?.defaultModel || 'oa/mimo-v2.6-flash';
+  const chosenModel = selectedModel(routerCfg, model);
+  if (!routerCfg.apiKey) {
+    throw new Error('Layanan AI belum dikonfigurasi. Setel API key dan default model lewat konfigurasi aplikasi.');
+  }
+  const directionBlock = designDirectionPromptBlock(designDirection);
+  // Tahap 2 hanya perlu kontrak aksesibilitas-craft, bukan daftar 7 template:
+  // arah visual sudah diputuskan di tahap 1.
+  const tasksSystemPrompt = PRD_TASKS_SYSTEM_PROMPT.replace(designTemplatePromptBlock(), '') + '\n' + getDesignGuidance();
+
+  const basePrompt = `Project Name: ${name || 'Auto-detect'}\nIde Aplikasi: ${userIdea}\n`;
+  const clarificationText = clarifications.map((c, idx) => `${idx + 1}. Tanya: ${c.question}\n   Keputusan: ${c.answer}`).join('\n');
+  const userPrompt = basePrompt + (clarificationText ? `\nHASIL KLARIFIKASI & KEPUTUSAN PENGGUNA:\n${clarificationText}\n` : '') + `\n${directionBlock}\n`;
   let lastRouterError = '';
 
-  let userPrompt = `Project Name: ${name || 'Auto-detect'}\nIde Aplikasi: ${userIdea}\n`;
-  if (clarifications && clarifications.length > 0) {
-    userPrompt += `\nHASIL KLARIFIKASI & KEPUTUSAN PENGGUNA:\n`;
-    clarifications.forEach((c, idx) => {
-      userPrompt += `${idx + 1}. Tanya: ${c.question}\n   Keputusan: ${c.answer}\n`;
-    });
+  function validationError(stage, problems) {
+    const err = new Error(
+      `PRD tersusun tetapi TIDAK lolos pemeriksaan ${stage}, jadi tidak disimpan. ` +
+      `Yang kurang: ${problems.join('; ')}.`
+    );
+    err.validationProblems = problems;
+    err.validationStage = stage;
+    return err;
   }
-  userPrompt += `\nBuat PRD dan task breakdown teknis yang sangat mendalam dan lengkap sekarang.`;
 
-  if (routerCfg && routerCfg.apiKey) {
+  // Keluaran terpotong (finish_reason=length) bukan kesalahan model, tapi
+  // anggaran token. Satu percobaan ulang dengan instraksi memendekkan.
+  async function callWithTruncationRetry(system, prompt) {
     try {
-      console.log(`[AI-PRD] Requesting PRD to OpenAgentic Router (${chosenModel})...`);
-      let parsed = await callRouter(routerCfg, chosenModel, DEEP_PRD_SYSTEM_PROMPT, userPrompt);
-      let problems = validatePRD(parsed);
-
-      if (problems.length > 0) {
-        console.warn(`[AI-PRD] Percobaan 1 ditolak validator: ${problems.join('; ')}`);
-        console.log('[AI-PRD] Mengulang sekali dengan instruksi perbaikan...');
-        try {
-          const retryPrompt = userPrompt + VALIDATION_RETRY_INSTRUCTION.replace('{{PROBLEMS}}', problems.map(p => `- ${p}`).join('\n'));
-          const retryParsed = await callRouter(routerCfg, chosenModel, DEEP_PRD_SYSTEM_PROMPT, retryPrompt);
-          const retryProblems = validatePRD(retryParsed);
-          if (retryProblems.length === 0) {
-            parsed = retryParsed;
-            problems = [];
-            console.log('[AI-PRD] Percobaan 2 lolos validasi.');
-          } else {
-            console.warn(`[AI-PRD] Percobaan 2 masih bermasalah: ${retryProblems.join('; ')}`);
-            problems = retryProblems;
-            parsed = retryParsed; // pakai yang terbaru, tapi tetap laporkan
-          }
-        } catch (retryErr) {
-          console.error('[AI-PRD] Percobaan 2 gagal:', retryErr.message);
-        }
-      }
-
-      if (problems.length > 0) {
-        // Jangan simpan PRD cacat diam-diam: user harus tahu apa yang kurang.
-        const err = new Error(
-          'PRD tersusun tetapi TIDAK lolos pemeriksaan kelengkapan, jadi tidak disimpan. ' +
-          'Yang kurang: ' + problems.join('; ') + '. Coba lagi, atau ganti model di pemilih model.'
-        );
-        err.validationProblems = problems;
-        throw err;
-      }
-
-      console.log(`[AI-PRD] PRD lolos validasi: ${parsed.tasks?.length || 0} task, ${parsed.features?.length || 0} modul.`);
-      return parsed;
+      return await callRouter(routerCfg, chosenModel, system, prompt);
     } catch (err) {
-      lastRouterError = err.message;
-      console.error('[AI-PRD] Gagal generate via router:', err.message);
-      if (err.validationProblems) throw err; // error validasi diteruskan apa adanya
+      if (err.message !== 'output_truncated') throw err;
+      console.warn('[AI-PRD] Keluaran terpotong, mengulang dengan instruksi lebih padat...');
+      return await callRouter(routerCfg, chosenModel, system,
+        prompt + '\n\nPENTING: jawaban sebelumnya terpotong. Ringkas: architectureOverview maksimal 250 kata, ' +
+        'summary maksimal 180 kata, features 3-6 modul. Tetap keluarkan SEMUA field sampai JSON penutup.');
     }
   }
 
-  // Router offline / gagal. Jangan pernah mengembalikan PRD template palsu:
-  // pengguna akan menyangka PRD-nya valid padahal isinya karangan.
-  throw new Error(routerErrorMessage(lastRouterError, 'menyusun PRD'));
+  async function generateSkeleton() {
+    // Tiga panggilan fokus: identitas, stack+arsitektur, fitur+DB+API.
+    // Dipisah karena model gratis self-stop setelah ~2 kunci saat diminta semua
+    // field sekaligus, dan 502 kalau prompt-nya dipangkas satu blok.
+    console.log(`[AI-PRD] Tahap 1a/3 identitas via ${chosenModel}...`);
+    const identity = await callWithTruncationRetry(
+      PRD_IDENTITY_SYSTEM_PROMPT,
+      userPrompt + '\nTulis identitas produk (projectName, tagline, summary) sekarang.'
+    );
+
+    const decided = {
+      projectName: identity.projectName,
+      tagline: identity.tagline,
+      summary: identity.summary
+    };
+    const decidedText = '\nKeputusan produk yang sudah ditetapkan (jangan mengulang field ini):\n' +
+      JSON.stringify(decided) + '\n';
+
+    console.log(`[AI-PRD] Tahap 1b/3 stack & arsitektur via ${chosenModel}...`);
+    const core = await callWithTruncationRetry(
+      // Kontrak desain + referensi arah hanya sekali, di panggilan yang menulis
+      // arsitektur, bukan di tiap panggilan.
+      PRD_CORE_SYSTEM_PROMPT + '\n' + designTemplatePromptBlock() + '\n' + getDesignGuidance(),
+      userPrompt + decidedText + '\nSusun techStack dan architectureOverview sekarang.'
+    );
+
+    console.log(`[AI-PRD] Tahap 1c/3 fitur, DB & API via ${chosenModel}...`);
+    const detail = await callWithTruncationRetry(
+      PRD_DETAIL_SYSTEM_PROMPT,
+      userPrompt + decidedText +
+      `\nStack yang ditetapkan (techStack): ${JSON.stringify(core.techStack)}\n` +
+      'Susun features, databaseSchema, dan apiEndpoints sekarang.'
+    );
+
+    let skeleton = { ...identity, ...core, ...detail };
+    let problems = validatePRD(skeleton, 'skeleton');
+    if (problems.length) {
+      console.warn(`[AI-PRD] Tahap 1 ditolak validator: ${problems.join('; ')}`);
+      const fixed = await callWithTruncationRetry(
+        PRD_DETAIL_SYSTEM_PROMPT,
+        userPrompt + decidedText +
+        `\nStack yang ditetapkan: ${JSON.stringify(core.techStack)}\n` +
+        `Perbaiki rincian berikut. Jangan mengubah identitas atau arsitektur.\n` +
+        `Masalah: ${problems.join('; ')}`
+      );
+      skeleton = { ...identity, ...core, ...fixed };
+      problems = validatePRD(skeleton, 'skeleton');
+    }
+    if (problems.length) throw validationError('kerangka PRD', problems);
+    return skeleton;
+  }
+
+  async function generateTasks(skeleton) {
+    const modules = skeleton.features.filter(Boolean).map(feature => feature.module).filter(Boolean);
+    console.log(`[AI-PRD] Tahap 2/2 tasks via ${chosenModel}...`);
+    const context = `Ide: ${userIdea}\nKerangka PRD tahap 1:\n${JSON.stringify(skeleton)}\n\n` +
+      `Daftar nama modul (pakai persis untuk field "module"): ${modules.join(', ')}\n\n`;
+    let tasksRes = await callWithTruncationRetry(
+      tasksSystemPrompt,
+      context + 'Susun tasks sekarang.'
+    );
+    let parsed = { ...skeleton, tasks: Array.isArray(tasksRes?.tasks) ? tasksRes.tasks : [] };
+    let problems = validatePRD(parsed);
+    if (problems.length) {
+      console.warn(`[AI-PRD] Tahap 2 ditolak validator: ${problems.join('; ')}`);
+      tasksRes = await callWithTruncationRetry(
+        tasksSystemPrompt,
+        context + `Perbaiki tasks. Jangan mengubah kerangka. Masalah: ${problems.join('; ')}`
+      );
+      parsed = { ...skeleton, tasks: Array.isArray(tasksRes?.tasks) ? tasksRes.tasks : [] };
+      problems = validatePRD(parsed);
+    }
+    if (problems.length) throw validationError('tasks', problems);
+    console.log(`[AI-PRD] PRD lolos validasi: ${parsed.tasks.length} task, ${parsed.features.length} modul.`);
+    return parsed;
+  }
+
+  try {
+    // Satu model dipilih pengguna/default dan dipakai untuk kedua tahap.
+    // Tidak ada fallback diam-diam ke model lain.
+    const skeleton = await generateSkeleton();
+    return await generateTasks(skeleton);
+  } catch (err) {
+    lastRouterError = err.message;
+    if (err.validationProblems) throw err;
+    console.error('[AI-PRD] Gagal generate via router:', err.message);
+    throw new Error(routerErrorMessage(lastRouterError, 'menyusun PRD'));
+  }
 }
 
 const APPEND_CHANGE_SYSTEM_PROMPT = `
@@ -689,7 +939,8 @@ Format output WAJIB berupa JSON murni tanpa markdown wrapper:
     {
       "id": "TASK-NEW",
       "title": "Judul task tambahan spesifik",
-      "spec": "Spesifikasi implementasi teknis untuk AI Coding Agent"
+      "module": "Nama Modul Baru",
+      "spec": "Tujuan; File; Dependensi: TASK-xx atau tidak ada; Implementasi; Error/edge case; Kriteria selesai; Verifikasi."
     }
   ]
 }
@@ -697,13 +948,17 @@ Format output WAJIB berupa JSON murni tanpa markdown wrapper:
 
 export async function appendFeatureChange(workspace, existingTasks = [], changeRequest, model) {
   const routerCfg = getRouterConfig();
-  const chosenModel = model || routerCfg?.defaultModel || 'oa/mimo-v2.6-flash';
+  const chosenModel = selectedModel(routerCfg, model);
   let lastRouterError = '';
 
   const contextPrompt = `
 PROJECT NAME: ${workspace.name}
 SUMMARY LAMA: ${workspace.summary}
-TECH STACK: ${workspace.tech_stack}
+TECH STACK: ${JSON.stringify(workspace.techStack || workspace.tech_stack)}
+ARSITEKTUR: ${workspace.architectureOverview || workspace.architecture || ''}
+FITUR: ${JSON.stringify(workspace.features || [])}
+DATABASE: ${JSON.stringify(workspace.databaseSchema || [])}
+ENDPOINT: ${JSON.stringify(workspace.apiEndpoints || [])}
 TASK YANG SUDAH ADA (${existingTasks.length} task):
 ${existingTasks.map(t => `- [${t.status}] ${t.id}: ${t.title}`).join('\n')}
 
@@ -716,9 +971,36 @@ Tugas: Buatkan penambahan fitur dan task eksekusi lanjutan untuk memenuhi permin
   if (routerCfg && routerCfg.apiKey) {
     try {
       console.log(`[AI-APPEND] Processing change request via ${chosenModel}...`);
-      return await callRouter(routerCfg, chosenModel, APPEND_CHANGE_SYSTEM_PROMPT, contextPrompt);
+      const result = await callRouter(routerCfg, chosenModel,
+        APPEND_CHANGE_SYSTEM_PROMPT + '\n' + getDesignGuidance() + '\nTask baru wajib spec konkret minimal 180 karakter berisi file path, Dependensi: TASK-xx (hanya task sebelumnya) atau tidak ada, error handling dan Verifikasi. Gunakan ID TASK-xx setelah ID maksimum yang sudah ada, jangan mengulang. newFeatures/newEndpoints/newDbTables hanya entri baru, jangan mengulang entri lama.', contextPrompt);
+      const problems = [];
+      if (!result || typeof result !== 'object') throw new Error('Format perubahan tidak valid');
+      if (!result.changeSummary || !Array.isArray(result.newTasks) || !result.newTasks.length) problems.push('perubahan wajib memiliki ringkasan dan task');
+      for (const key of ['newFeatures', 'newEndpoints', 'newDbTables']) if (!Array.isArray(result[key])) problems.push(`${key} harus array`);
+      const ids = new Set(existingTasks.map(t => t.id));
+      for (const t of result.newTasks || []) {
+        const spec = String(t?.spec || '');
+        const dependencies = taskDependencies(spec);
+        if (!t || !/^TASK-\d{2,}$/.test(t.id || '') || ids.has(t.id) || !t.title || !t.module || spec.length < 180 || !hasFilePath(spec) || !hasDependencyValue(spec) || !hasDoneEvidence(spec) || !/verifikasi|test|uji|curl|bukti/i.test(spec)) problems.push('task baru tidak lengkap/ID duplikat');
+        for (const dependency of dependencies) {
+          if (dependency === t?.id) problems.push(`dependensi task baru ${dependency} menunjuk dirinya sendiri`);
+          else if (!ids.has(dependency)) problems.push(`dependensi task baru ${dependency} belum ada`);
+        }
+        if (t) ids.add(t.id);
+      }
+      for (const [key, field, old] of [['newFeatures','module',workspace.features], ['newEndpoints','path',workspace.apiEndpoints], ['newDbTables','table',workspace.databaseSchema]]) {
+        const seen = new Set((old || []).map(x => x[field]));
+        for (const entry of Array.isArray(result[key]) ? result[key] : []) {
+          const value = entry?.[field];
+          if (!value || seen.has(value)) problems.push(`${key} memiliki entri kosong/duplikat`);
+          seen.add(value);
+        }
+      }
+      if (problems.length) throw Object.assign(new Error('PRD perubahan tidak lengkap: ' + problems.join('; ')), { validationProblems: problems });
+      return result;
     } catch (err) {
       lastRouterError = err.message;
+      if (err.validationProblems) throw err;
       console.error('[AI-APPEND] Error:', err.message);
     }
   }

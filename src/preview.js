@@ -4,7 +4,11 @@
 //
 // Cara kerja: palet HEX dan aturan dibaca dari features_json (yang sudah berisi
 // template design system pilihan model), lalu dirender jadi halaman contoh.
+// Dengan ?direction=<id> palet taken dari template itu, sehingga user bisa
+// membandingkan arah visual lain sebelum memilih.
 // Sengaja tanpa dependensi: satu fungsi, keluaran HTML mandiri.
+
+import { DESIGN_TEMPLATES, DESIGN_DIRECTIONS } from './design-templates.js';
 
 const HEX_RE = /#([0-9a-fA-F]{6})\b/g;
 
@@ -128,10 +132,19 @@ function esc(s) {
   }[c]));
 }
 
-export function buildPreviewHtml(ws, features, tasks) {
+// Palet contoh dari satu template, dipakai kalau user membandingkan arah
+// visual lewat ?direction=<id> sebelum PRD dibuat.
+export function directionHexes(directionId) {
+  const t = DESIGN_TEMPLATES.find(x => x.id === directionId);
+  if (!t) return [];
+  return [...new Set(Object.values({ ...t.light, ...t.dark }).flat().filter(v => typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v)).map(v => v.toLowerCase()))];
+}
+
+export function buildPreviewHtml(ws, features, tasks, options = {}) {
   const ds = (features || []).find(f => f && f.module && /design system|desain antarmuka|sistem desain|design token/i.test(f.module));
   const dsText = ds ? [ds.description, ...(ds.acceptanceCriteria || [])].join('\n') : '';
-  const hexes = extractHexes(dsText);
+  const direction = DESIGN_TEMPLATES.find(x => x.id === options.direction);
+  const hexes = direction ? directionHexes(direction.id) : extractHexes(dsText);
 
   const themes = buildThemes(hexes);
   const L = ensureContrast(themes.light);
@@ -204,6 +217,35 @@ export function buildPreviewHtml(ws, features, tasks) {
   </section>`;
   }
 
+  // Kartu perbandingan: user lihat semua palet lalu pilih arah yang dipakai.
+  // Klik kartu membuka pratinjau lengkap arah itu; tombol "pakai ini" memakai
+  // POST sehingga arah tersimpan di workspace tanpacharger ulang PRD.
+  function compareSection(currentId) {
+    const cards = DESIGN_TEMPLATES.map(t => {
+      const l = t.light;
+      const band = `linear-gradient(90deg, ${l.bg} 0 34%, ${l.surface} 34% 50%, ${l.accent} 50% 66%, ${l.text} 66% 82%, ${l.done} 82% 100%)`;
+      const isCurrent = t.id === currentId;
+      // <form> tidak boleh ada di dalam <a>, jadi kartu bukan link: judulnya
+      // yang membuka pratinjau, tombolnya yang menyimpan pilihan.
+      return `<div class="cmp-card${isCurrent ? ' current' : ''}">
+        <a class="cmp-swatch" style="background:${band}" href="?compare=1&amp;direction=${encodeURIComponent(t.id)}" aria-label="Pratinjau ${esc(t.name)}"></a>
+        <div class="cmp-body">
+          <a href="?compare=1&amp;direction=${encodeURIComponent(t.id)}" style="color:inherit;text-decoration:none"><strong>${esc(t.name)}</strong></a>
+          <small>${esc(t.feel)}</small>
+          <small>${esc(t.for)}</small>
+          ${isCurrent ? '<span class="cmp-cta">Arah yang dipakai PRD ini</span>'
+            : `<form method="POST" action="/api/v1/workspaces/${esc(ws.id)}/preview/direction"><input type="hidden" name="direction" value="${esc(t.id)}">
+                 <button class="btn-primary" type="submit" style="font-size:.75rem;padding:6px 10px">Pakai arah ini</button></form>`}
+        </div>
+      </div>`;
+    }).join('\n');
+    return `<section class="panel">
+      <div class="panel-head"><h3>Pilih arah visual</h3><span class="verdict">${DESIGN_DIRECTIONS.length} arah</span></div>
+      <p class="verdict" style="margin:0 0 10px">Klik kartu untuk melihat pratinjau lengkap arah itu. "Pakai arah ini" menyimpan pilihan di workspace ini; PRD yang sudah jadi tidak berubah, tapi task berikutnya memakai arah pilihan.</p>
+      <div class="cmp">${cards}</div>
+    </section>`;
+  }
+
   return `<!DOCTYPE html>
 <html lang="id">
 <head>
@@ -243,10 +285,9 @@ export function buildPreviewHtml(ws, features, tasks) {
   .row{display:flex;gap:8px;flex-wrap:wrap}
   .btn-primary{border:1px solid transparent;border-radius:6px;padding:8px 14px;font:inherit;font-size:.82rem;
        font-weight:600;cursor:pointer;transition:opacity 150ms cubic-bezier(.23,1,.32,1)}
-  .btn-primary:hover{opacity:.88}
   .btn-ghost{background:transparent;border:1px solid;border-radius:6px;padding:8px 14px;font:inherit;
        font-size:.82rem;font-weight:600;cursor:pointer;transition:background 150ms cubic-bezier(.23,1,.32,1)}
-  .btn-ghost:hover{background:#8881}
+  @media (hover:hover) and (pointer:fine){.btn-primary:hover{opacity:.88}.btn-ghost:hover{background:#8881}}
   .btn-ghost:disabled{cursor:not-allowed}
   button:focus-visible,input:focus-visible{outline:2px solid currentColor;outline-offset:2px}
   .field{display:flex;flex-direction:column;gap:5px;font-size:.78rem;font-weight:600}
@@ -269,7 +310,18 @@ export function buildPreviewHtml(ws, features, tasks) {
   .sw small{color:var(--ink2);font-size:.7rem}
   .mods{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
   .mod{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:9px 12px;font-size:.8rem}
-  .mod b{font-family:var(--font-mono);font-size:.7rem;color:var(--accent);margin-right:7px}
+  .mod b{font-family:var(--font-mono);font-size:.72rem;color:var(--accent);margin-right:7px}
+  .cmp{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;margin-top:6px}
+  .cmp-card{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card);
+           display:flex;flex-direction:column}
+  .cmp-card.current{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+  .cmp-swatch{display:block;height:64px}
+  .cmp-swatch:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .cmp-body{padding:10px 12px;display:flex;flex-direction:column;gap:4px}
+  .cmp-body strong{font-size:.85rem}
+  .cmp-body small{color:var(--ink2);font-size:.72rem;line-height:1.4}
+  .cmp-body form{margin:0}
+  .cmp-cta{font-size:.7rem;color:var(--accent);font-weight:600;margin-top:2px}
   footer.page-foot{margin-top:32px;color:var(--ink2);font-size:.78rem}
   @media (prefers-reduced-motion: reduce){*{transition:none!important}}
 </style>
@@ -282,10 +334,13 @@ export function buildPreviewHtml(ws, features, tasks) {
     ${ds ? `<span class="tag">template: ${esc((ds.description || '').match(/\(id:\s*([a-z-]+)\)/)?.[1] || 'design system')}</span>` : ''}
   </header>
 
-  ${ds ? '' : '<div class="note">PRD ini belum punya modul Design System, jadi halaman ini memakai palet bawaan. Regenerate PRD-nya supaya paletnya ikut.</div>'}
+  ${direction ? `<div class="note">Pratinjau arah <strong>${esc(direction.name)}</strong> (${esc(direction.for)}). Halaman ini belum memakai PRD: hanya palet, tipografi, dan bentuk komponen dari arah tersebut. Arah yang dipakai PRD ada di bawah.</div>` : ''}
+  ${!direction && !ds ? '<div class="note">PRD ini belum punya modul Design System, jadi halaman ini memakai palet bawaan. Regenerate PRD-nya supaya paletnya ikut.</div>' : ''}
 
   ${panel(L, 'light')}
   ${panel(D, 'dark')}
+
+  ${options.compare ? compareSection(options.compareId) : ''}
 
   <section class="panel">
     <div class="panel-head"><h3>Modul dalam PRD</h3><span class="verdict">${modules.length} modul</span></div>

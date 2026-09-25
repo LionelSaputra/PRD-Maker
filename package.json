@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node tests/test.js"
+    "test": "node tests/test.js && node tests/ai-quality.test.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1"
