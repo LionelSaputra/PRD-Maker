@@ -380,6 +380,23 @@ try {
     assert.match(calls[3].body.messages[0].content, /tidak boleh mendapat task frontend, login, atau design system/i);
   });
 
+  await test('"tanpa UI" as a label for a special mode does not strip the UI', () => {
+    // Regresi nyata: model menulis "Aplikasi web internal (tanpa UI): tabel
+    // untuk desktop", maksudnya mode cetak/keadaan khusus, tapi validator
+    // membacanya sebagai produk non-UI lalu Design System dibuang.
+    const web = structuredClone(uiSkeleton);
+    web.summary = 'Aplikasi web internal (tanpa UI): tabel untuk desktop, 5 petugas, 500 surat per bulan. Di luar lingkup: email masuk.';
+    web.architectureOverview = 'Keputusan teknologi: Node.js dipilih karena ringan. React ditolak sebagai alternatif. HTTPS, validasi input, otorisasi server-side.';
+    const problems = validatePRD(web, 'skeleton');
+    assert.ok(!problems.some(p => /tidak ada modul Design System/i.test(p)), JSON.stringify(problems));
+
+    // Produk non-UI yang SUNGGUHAN tetap harus ditolak saat membawa Design System.
+    const cli = structuredClone(uiSkeleton);
+    cli.summary = 'CLI tanpa antarmuka untuk 1 pengguna, 100 data per bulan. Di luar lingkup: web dan dashboard.';
+    cli.architectureOverview = 'Keputusan teknologi: Python dipilih karena stdlib cukup. Redis ditolak. Validasi input.';
+    assert.ok(validatePRD(cli, 'skeleton').some(p => /Design System tidak boleh/i.test(p)), 'CLI dengan Design System harus ditolak');
+  });
+
   await test('validation treats "no frontend framework" as still needing a UI', () => {
     // Regresi nyata: aplikasi web yang menolak framework (bukan menolak UI)
     // pernah dibaca sebagai produk tanpa antarmuka, lalu Design System ditolak.
