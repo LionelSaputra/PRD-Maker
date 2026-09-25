@@ -971,6 +971,12 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       const proseProblems = problems.filter(p => /summary|ringkasan|architectureOverview|arsitektur|techStack|skala|batas lingkup/i.test(p));
       const detailProblems = problems.filter(p => !proseProblems.includes(p));
 
+      // Hasil perbaikan bisa LEBIH BURUK dari upaya pertama (terukur: upaya
+      // pertama punya 6 acceptanceCriteria dan tabel 16 field, hasil perbaikan
+      // malah kehilangan nama modul). Jadi tiap bagian dinilai ulang dan hanya
+      // dipakai kalau benar-benar mengurangi jumlah masalah.
+      const problemsFor = (candidate) => validatePRD(candidate, 'skeleton').length;
+
       let prose = { summary: identity.summary, projectName: identity.projectName, tagline: identity.tagline, techStack: core.techStack, architectureOverview: core.architectureOverview };
       if (proseProblems.length) {
         // Prompt perbaikan harus memuat ATURAN field yang diminta, bukan hanya
@@ -986,7 +992,11 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
           `Masalah yang harus dibereskan: ${proseProblems.join('; ')}`,
           ['projectName', 'tagline', 'summary', 'techStack', 'architectureOverview']
         );
-        prose = fixedProse;
+        if (fixedProse && problemsFor({ ...identity, ...core, ...detail, ...fixedProse }) < problemsFor(skeleton)) {
+          prose = fixedProse;
+        } else {
+          console.warn('[AI-PRD] Perbaikan prosa tidak memperbaiki; memakai hasil pertama.');
+        }
       }
 
       let detailFixed = detail;
@@ -998,7 +1008,15 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
           `Perbaiki rincian berikut. Jangan mengubah identitas atau arsitektur.\n` +
           `Masalah: ${detailProblems.join('; ')}`
         );
-        detailFixed = { ...detail, ...fixed };
+        const candidate = { ...detail, ...fixed };
+        const named = Array.isArray(candidate.features)
+          && candidate.features.length
+          && candidate.features.every(f => f && typeof f.module === 'string' && f.module.trim());
+        if (named && problemsFor({ ...identity, ...core, ...candidate }) < problemsFor({ ...identity, ...core, ...detail })) {
+          detailFixed = candidate;
+        } else {
+          console.warn('[AI-PRD] Perbaikan rincian tidak memperbaiki; memakai hasil pertama.');
+        }
       }
       skeleton = { ...identity, ...prose, ...detailFixed };
       problems = validatePRD(skeleton, 'skeleton');
