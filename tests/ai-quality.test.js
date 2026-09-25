@@ -117,6 +117,26 @@ try {
     assert.match(calls[3].body.messages[0].content, /(?:CLI|bot|API|library).*(?:tanpa UI|tanpa antarmuka)/iu);
   });
 
+  await test('Design System checks accept Indonesian terms for UI states', () => {
+    // Regresi nyata: modul Design System menulis "skeleton ... saat memuat",
+    // "blok kosong", "blok gagal merah", tapi validator hanya mengenal istilah
+    // Inggris sehingga menolak PRD yang sudah benar.
+    const ds = {
+      module: 'Design System',
+      description: 'Token --bg #F7F6F2, --surface #FFFFFF, --accent #1F5F4B. Kontras 12:1. Font Inter 16px bobot 400 line-height 1.5. Spacing 8px/16px, radius 6px, border 1px. Input punya label terprogram dan focus ring.',
+      userStories: ['x'],
+      acceptanceCriteria: [
+        'State UI lengkap: skeleton abu-abu saat memuat, blok kosong dengan teks "Tidak ada surat yang cocok", dan blok gagal merah dengan tombol muat ulang.',
+        'Semua input punya <label> terprogramatik dan kontras teks di atas permukaan minimal 4.5:1.'
+      ],
+      edgeCases: ['Viewport 320px tidak overflow']
+    };
+    const prd = { ...structuredClone(uiSkeleton), features: [ds] };
+    const problems = validatePRD(prd, 'skeleton');
+    assert.ok(!problems.some(p => /state UI penting/i.test(p)), JSON.stringify(problems));
+    assert.ok(!problems.some(p => /typography/i.test(p)), JSON.stringify(problems));
+  });
+
   await test('a foreign-script fragment is stripped instead of voiding a good PRD', () => {
     // Regresi nyata: PRD dengan 5 modul, 5 acceptanceCriteria, dan 3 edgeCases
     // per modul ditolak hanya karena dua kata bocor: "surat,死的/kategori" dan
