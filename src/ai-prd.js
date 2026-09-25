@@ -240,6 +240,30 @@ function parseMarkdownTasks(text) {
   return tasks;
 }
 
+export function normalizePRDFields(prd) {
+  if (!prd || typeof prd !== 'object') return prd;
+  const out = { ...prd };
+  // Model kadang mengganti nama kunci (name/title alih-alih module, id task
+  // alih-alih spec). Bentuknya ekuivalen, jadi diterima — tapi nilainya tetap
+  // harus lolos validator. Terukur: 8 fitur ditolak hanya karena memakai
+  // "name" untuk modul dan "id" untuk identitas.
+  if (Array.isArray(out.features)) {
+    out.features = out.features.map((f) => {
+      if (!f || typeof f !== 'object') return f;
+      const module = f.module || f.name || f.title || f.modul;
+      return module ? { ...f, module } : f;
+    });
+  }
+  if (Array.isArray(out.tasks)) {
+    out.tasks = out.tasks.map((t) => {
+      if (!t || typeof t !== 'object') return t;
+      const module = t.module || t.name || t.modul;
+      return module && !t.module ? { ...t, module } : t;
+    });
+  }
+  return out;
+}
+
 // Ringkasan syarat modul Design System untuk prompt tahap rincian. Kontrak
 // penuh (getDesignGuidance) terlalu panjang untuk tahap ini dan pernah memicu
 // keluaran terpotong; yang dibutuhkan hanya syarat yang diperiksa validator.
@@ -519,6 +543,7 @@ Keluaran HANYA JSON dengan tepat tiga kunci:
 3-6 modul fitur. Tulis "Tidak berlaku (tanpa antarmuka)" untuk DB/API pada CLI, bot statis, atau library yang memang tidak membutuhkannya, dan array tetap kosong.
 
 MODUL DESIGN SYSTEM (WAJIB untuk produk ber-antarmuka):
+JANGAN mengubah nama kunci JSON. Field modul bernama "module" (bukan "name"/"title"/"id"). Field task bernama "spec" (bukan "description"/"files").
 Jika produk punya antarmuka (web, desktop, mobile), salah satu modul fitur HARUS bernama "Design System" dan isinya konkret — bukan deskripsi rasa. Modul itu wajib memuat:
 - token warna dengan nilai nyata (minimal 3 nilai HEX/OKLCH: latar, permukaan, aksen),
 - token tipografi (keluarga font, ukuran, berat, line-height),
@@ -987,7 +1012,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     );
 
     console.log(`[AI-PRD] Tahap 1c/3 fitur, DB & API via ${chosenModel}...`);
-    const detail = await callStage(
+    const detail = normalizePRDFields(await callStage(
       'rincian',
       // Modul Design System dituntut validator pada features, jadi syaratnya
       // harus ada di prompt yang MENULIS features. Sebelumnya kontrak desain
@@ -998,7 +1023,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       `\nStack yang ditetapkan (techStack): ${JSON.stringify(core.techStack)}\n` +
       'Susun features, databaseSchema, dan apiEndpoints sekarang.',
       ['features', 'databaseSchema', 'apiEndpoints']
-    );
+    ));
 
     let skeleton = { ...identity, ...core, ...detail };
     let problems = validatePRD(skeleton, 'skeleton');
@@ -1079,7 +1104,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       tasksSystemPrompt,
       context + 'Susun tasks sekarang.'
     );
-    let parsed = { ...skeleton, tasks: Array.isArray(tasksRes?.tasks) ? tasksRes.tasks : [] };
+    let parsed = normalizePRDFields({ ...skeleton, tasks: Array.isArray(tasksRes?.tasks) ? tasksRes.tasks : [] });
     let problems = validatePRD(parsed);
     if (problems.length) {
       console.warn(`[AI-PRD] Tahap 2 ditolak validator: ${problems.join('; ')}`);
@@ -1090,7 +1115,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       // Perbaikan hanya dipakai kalau benar-benar mengurangi masalah. Model
       // kadang menjawab dengan skema lain (description/files/acceptanceCriteria
       // alih-alih spec), dan menimpanya membuat SEMUA task kehilangan spec.
-      const candidate = { ...skeleton, tasks: Array.isArray(retryRes?.tasks) ? retryRes.tasks : [] };
+      const candidate = normalizePRDFields({ ...skeleton, tasks: Array.isArray(retryRes?.tasks) ? retryRes.tasks : [] });
       const retryProblems = validatePRD(candidate);
       if (retryProblems.length < problems.length) {
         parsed = candidate;
