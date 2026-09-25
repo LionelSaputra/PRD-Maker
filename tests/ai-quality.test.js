@@ -10,6 +10,7 @@ import {
   generateClarifications,
   generatePRDFromPrompt,
   normalizePRDFields,
+  stripForeignFragments,
   validatePRD
 } from '../src/ai-prd.js';
 import { skeleton as uiSkeleton, tasks as uiTasks, clarification } from './fixtures/prd.js';
@@ -114,6 +115,30 @@ try {
     assert.equal((calls[1].body.messages[0].content.match(/KONTRAK DESAIN ANTI AI-SLOP/g) || []).length, 1);
     assert.doesNotMatch(calls[2].body.messages[0].content, /KONTRAK DESAIN ANTI AI-SLOP/);
     assert.match(calls[3].body.messages[0].content, /(?:CLI|bot|API|library).*(?:tanpa UI|tanpa antarmuka)/iu);
+  });
+
+  await test('a foreign-script fragment is stripped instead of voiding a good PRD', () => {
+    // Regresi nyata: PRD dengan 5 modul, 5 acceptanceCriteria, dan 3 edgeCases
+    // per modul ditolak hanya karena dua kata bocor: "surat,死的/kategori" dan
+    // "dengan工具 terpisah".
+    assert.equal(
+      stripForeignFragments('metadata bertipe pilihan (jenis surat,死的/kategori, tujuan)'),
+      'metadata bertipe pilihan (jenis surat, kategori, tujuan)'
+    );
+    assert.equal(
+      stripForeignFragments('diinstrumentasi dengan工具 terpisah: satu tabel'),
+      'diinstrumentasi dengan terpisah: satu tabel'
+    );
+    // Setelah dibersihkan, PRD yang isinya benar harus lolos.
+    const prd = normalizePRDFields({
+      ...structuredClone(uiSkeleton),
+      summary: uiSkeleton.summary + ' Catatan死的 tambahan untuk konteks.',
+      architectureOverview: uiSkeleton.architectureOverview + ' Diukur dengan工具 internal.'
+    });
+    assert.ok(!validatePRD(prd, 'skeleton').some(p => /terputus atau rusak/i.test(p)));
+    // Teks yang benar-benar rusak (token berulang) tetap ditolak.
+    const repeated = { ...structuredClone(uiSkeleton), summary: uiSkeleton.summary + ' UEUEUEUEUEUEUE' };
+    assert.ok(validatePRD(repeated, 'skeleton').some(p => /terputus atau rusak/i.test(p)));
   });
 
   await test('field names drifted by the model are normalised, values still validated', () => {
