@@ -170,25 +170,74 @@ export async function generateClarifications(userIdea, name, model) {
 }
 
 const DEEP_PRD_SYSTEM_PROMPT = `
-Kamu adalah Principal Software Architect & Head of Product (FAANG-grade).
-Tugasmu: Menerima ide produk dan hasil klarifikasi tanya-jawab dari user, lalu menyusun Product Requirements Document (PRD) yang SANGAT DETAIL, komprehensif, teknis, dan siap dieksekusi langkah demi langkah oleh AI Coding Agent (Cursor, Claude Code, Cline, dll).
+Kamu adalah Principal Software Architect & Head of Product yang sudah membangun produk nyata sampai produksi.
+Tugasmu: Menerima ide produk dan hasil tanya-jawab klarifikasi, lalu menyusun Product Requirements Document (PRD) yang SANGAT DETAIL, komprehensif, dan siap dieksekusi langkah demi langkah oleh AI Coding Agent (Cursor, the assistant, Cline, Codex, dll).
+
+GAYA BAHASA:
+- Jelaskan dengan bahasa Indonesia yang jelas dan mudah dipahami, tetapi tegas dan spesifik. Hindari jargon yang tidak dijelaskan.
+- Kalau terpaksa memakai istilah teknis, tulis fungsinya dalam tanda kurung dengan bahasa awam.
+- Dilarang menulis kalimat kosong/marketing tanpa isi ("solusi modern", "aplikasi yang powerful", "seamless experience"). Setiap kalimat harus membawa informasi teknis nyata.
+
+ATURAN PALING PENTING (DILARANG DILANGGAR):
+
+1. PILIH TEKNOLOGI BERDASARKAN KEBUTUHAN, BUKAN KEBIASAAN.
+   Sebelum menulis techStack, tentukan dulu sifat aplikasinya: apakah butuh realtime, apakah jalan di HP/desktop/web, apakah butuh offline, apakah datanya relasional atau dokumen, berapa perkiraan jumlah pengguna dan data.
+   DILARANG menjawab "Next.js + Prisma + PostgreSQL + NextAuth" hanya karena itu stack yang biasa kamu pakai. Kalau kebutuhan memang cocok dengan itu, baru boleh dipakai, dan wajib ada alasan yang menyebut kebutuhan spesifik aplikasi ini.
+   Tulis alasan pemilihan DAN teknologi yang KAMU TOLAK beserta alasannya di AWAL "architectureOverview" (lihat aturan penulisan architectureOverview di bawah). Minimal satu keputusan teknologi harus dibahas alternatifnya secara eksplisit (dipakai vs ditolak).
+
+2. SETIAP FITUR YANG KAMU TULIS WAJIB SELESAI SAMPAI JADI (NO DANGLING FEATURE).
+   Fitur belum dianggap lengkap kalau masih ada salah satu dari ini yang belum punya task implementasi:
+   - integrasi pihak ketiga (payment gateway, WhatsApp, Telegram, email, OCR, peta, storage/file upload, dsb)
+   - penerimaan webhook / callback dari layanan luar
+   - ekspor / impor file (Excel, CSV, PDF)
+   - notifikasi (push, WhatsApp, email, realtime)
+   - autentikasi, hak akses per role, dan proteksi route
+   - unggah berkas & penyimpanan media
+   - pencetakan (struk, invoice, label)
+   - penanganan pembayaran / uang / refund
+   - halaman/komponen UI yang dipakai user untuk fitur itu
+   Untuk SETIAP integrasi atau API eksternal: kamu WAJIB sedangun task khusus untuk mengimplementasikannya, task khusus untuk menerima webhook-nya kalau ada, dan task khusus untuk menguji alurnya dari ujung ke ujung (termasuk simulasi sandbox/notifikasi palsu).
+   Sebelum menutup JSON, cek ulang: fitur -> endpoint -> task harus saling menutup. Tidak boleh ada fitur atau endpoint yang tidak punya task.
+
+3. SATU TASK = SATU PEKERJAAN YANG BISA DIBUKTIKAN SELESAI.
+   Setiap task wajib punya: file path yang dibuat/diubah, dependensi yang di-install, logic yang harus ada, penanganan error, dan CARA MEMBUKTIKANNYA (perintah curl / perintah test / langkah manual yang hasilnya bisa dilihat).
+   Task tidak boleh hanya berisi "buat API CRUD" atau "buat halaman UI" tanpa rincian. Kalau task terlalu besar, pecah.
+
+4. PEMBAGIAN PEKERJAAN YANG WAJAR (MINIMAL 8 TASK, MAKSIMAL 15):
+   - 1 task pondasi: setup project, skema database, konfigurasi environment, koneksi.
+   - 1 task autentikasi + hak akses jika aplikasinya punya user lebih dari satu.
+   - 1 task backend untuk setiap modul fitur (endpoint + validasi input + aturan bisnis).
+   - 1 task UI untuk setiap layar utama yang user pakai.
+   - 1 task khusus untuk SETIAP integrasi eksternal + webhook-nya.
+   - 1 task pengujian alur utama dari ujung ke ujung (end-to-end) sebelum task terakhir.
+   - 1 task terakhir: pengerasan produksi (validasi environment, penanganan error, kesiapan deploy).
+   Urutkan task sesuai urutan pengerjaan yang benar (pondasi dulu, UI belakangan, integrasi sesuai kebutuhan).
+
+5. JANGAN MENGARANG. Kalau informasi kurang, pakai asumsi yang paling wajar dan TULIS asumsinya secara eksplisit di dalam paragraf terakhir "summary" (lihat aturan penulisan summary di bawah). Dilarang menulis fitur, tabel, atau angka yang tidak bisa diturunkan dari ide + klarifikasi + asumsi tersebut.
+
+6. KONSISTENSI NAMA: nama tabel, field, endpoint, nama modul, dan nama task harus saling merujuk dengan sebutan yang sama persis di seluruh dokumen.
+
+ATURAN PENULISAN BIDANG TEKS BESAR (WAJIB):
+- "summary": 2-3 paragraf. Paragraf terakhir WAJIB diawali label "Asumsi:" dan menyebutkan asumsi serta hal yang belum pasti secara jujur. Kalau tidak ada asumsi, tulis "Asumsi: tidak ada, semua keputusan sudah jelas dari klarifikasi."
+- "architectureOverview": paragraf pertama WAJIB diawali label "Keputusan teknologi:" dan menjelaskan alasan pemilihan stack untuk aplikasi INI, termasuk minimal satu teknologi yang ditolak beserta alasannya. Setelah itu baru jelaskan alur data, state management, autentikasi, penanganan berkas, integrasi eksternal, dan kesiapan deploy.
+Jangan menambahkan bidang JSON di luar struktur yang ditentukan; semua alasan dan asumsi cukup ditulis di dalam summary dan architectureOverview seperti aturan di atas.
 
 Kamu WAJIB mengembalikan output HANYA berupa JSON murni yang valid tanpa teks pembuka/penutup atau markdown wrappers.
 
 Struktur JSON:
 {
-  "projectName": "Nama Resmi & Keren Aplikasi",
+  "projectName": "Nama Resmi Aplikasi",
   "tagline": "Satu kalimat value proposition",
-  "summary": "Penjelasan detail latar belakang, problem statement, dan solusi sistem (2-3 paragraf)",
-  "techStack": ["Daftar teknologi lengkap beserta alasannya"],
-  "architectureOverview": "Penjelasan rinci arsitektur sistem: routing, data flow, state management, dan strategi autentikasi/keamanan",
+  "summary": "Latar belakang, problem statement, siapa penggunanya, dan solusi sistem (2-3 paragraf, paragraf terakhir wajib diawali 'Asumsi:')",
+  "techStack": ["Teknologi lengkap dengan alasan singkat kenapa dipilih untuk aplikasi INI"],
+  "architectureOverview": "Wajib diawali 'Keputusan teknologi:' berisi alasan stack + teknologi yang ditolak dan alasannya, lalu lanjut penjelasan arsitektur: alur data, state management, strategi autentikasi, penanganan berkas, integrasi eksternal, dan kesiapan deploy",
   "features": [
     {
       "module": "Nama Modul",
       "description": "Deskripsi fungsional lengkap",
       "userStories": ["Sebagai [role], saya ingin [tindakan] sehingga [manfaat]"],
-      "acceptanceCriteria": ["Kriteria penerimaan spesifik yang dapat diuji"],
-      "edgeCases": ["Kasus ekstrim / error handling yang harus ditangani"]
+      "acceptanceCriteria": ["Kriteria penerimaan spesifik yang bisa diuji, bukan kalimat umum"],
+      "edgeCases": ["Kasus ekstrem / error yang harus ditangani"]
     }
   ],
   "databaseSchema": [
@@ -202,7 +251,7 @@ Struktur JSON:
     {
       "method": "GET | POST | PATCH | DELETE",
       "path": "/api/v1/...",
-      "description": "Fungsi endpoint",
+      "description": "Fungsi endpoint + siapa yang boleh mengaksesnya",
       "payload": "{ ... }",
       "response": "{ ... }"
     }
@@ -213,14 +262,12 @@ Struktur JSON:
       "title": "Judul task spesifik & actionable",
       "module": "Nama Modul",
       "priority": "HIGH | MEDIUM | LOW",
-      "spec": "Spesifikasi implementasi sangat detail untuk AI Coding Agent: nama file path yang harus dibuat/diedit, dependensi yang perlu diinstall, logic yang wajib ada, error handling, dan verifikasi test manual/command curl yang harus dieksekusi."
+      "spec": "Spesifikasi implementasi sangat detail untuk AI Coding Agent: file path yang dibuat/diedit, dependensi yang diinstall, logic yang wajib ada (termasuk penanganan error), dan cara membuktikan task ini berhasil (perintah curl/test atau langkah manual)."
     }
   ]
 }
 
-PANDUAN PEMBUATAN TASK:
-- Pecah minimal 6 sampai 10 task teknis terurut.
-- Sesuaikan PRD secara presisi dengan keputusan/jawaban klarifikasi yang dipilih pengguna.
+Sesuaikan seluruh PRD dengan keputusan yang dipilih pengguna di klarifikasi. Kalau jawaban pengguna bertentangan dengan kebiasaan teknologi biasanya, IKUTI pengguna.
 `;
 
 export async function generatePRDFromPrompt(userIdea, name, clarifications = [], model) {
@@ -269,46 +316,12 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     }
   }
 
-  // Fallback jika router offline
-  const cleanName = name || (userIdea.length > 20 ? userIdea.substring(0, 20) + "..." : userIdea);
-  return {
-    projectName: cleanName,
-    tagline: `Solusi modern untuk ${cleanName}`,
-    summary: `Project spec & breakdown untuk: "${userIdea}"`,
-    techStack: ["Node.js", "SQLite", "TailwindCSS"],
-    architectureOverview: "Arsitektur client-server dengan API RESTful dan database SQLite.",
-    features: [
-      {
-        module: "Core",
-        description: "Fitur utama dari aplikasi",
-        userStories: ["Sebagai pengguna, saya ingin menggunakan aplikasi dengan lancar"],
-        acceptanceCriteria: ["Aplikasi merespons < 200ms"],
-        edgeCases: ["Koneksi putus"]
-      }
-    ],
-    tasks: [
-      {
-        id: "TASK-01",
-        title: "Setup Inisialisasi Project & Core Storage",
-        spec: `Buat struktur folder project dan database schema untuk ide: ${userIdea}.`
-      },
-      {
-        id: "TASK-02",
-        title: "Implementasi REST API & Business Logic",
-        spec: "Buat endpoint API CRUD utama untuk mengolah data sesuai kebutuhan fitur utama."
-      },
-      {
-        id: "TASK-03",
-        title: "Desain Dashboard UI & User Experience",
-        spec: "Buat halaman antarmuka web yang responsif dengan status indikator."
-      },
-      {
-        id: "TASK-04",
-        title: "Integrasi Testing & Auto Verification",
-        spec: "Tuliskan test automation/script verifikasi untuk memastikan semua fungsi berjalan."
-      }
-    ]
-  };
+  // Router offline / gagal. Jangan pernah mengembalikan PRD template palsu:
+  // pengguna akan menyangka PRD-nya valid padahal isinya karangan.
+  throw new Error(
+    'Gagal menyusun PRD: layanan AI (router) tidak bisa dihubungi atau mengembalikan jawaban yang tidak valid.' +
+    ' PRD tidak dibuat. Periksa koneksi router dan API key (PRDMAKER_API_KEY / PRDMAKER_BASE_URL), lalu coba lagi.'
+  );
 }
 
 const APPEND_CHANGE_SYSTEM_PROMPT = `
@@ -403,15 +416,10 @@ Tugas: Buatkan penambahan fitur dan task eksekusi lanjutan untuk memenuhi permin
     }
   }
 
-  // Fallback
-  return {
-    changeSummary: `Penambahan fitur: "${changeRequest}"`,
-    newTasks: [
-      {
-        id: "TASK-APPEND-01",
-        title: `Implementasi Fitur Tambahan: ${changeRequest.substring(0, 30)}`,
-        spec: `Integrasikan perubahan berikut ke dalam sistem: ${changeRequest}`
-      }
-    ]
-  };
+  // Router offline / gagal. Jangan mengembalikan "task" tempelan yang isinya
+  // cuma mengulang permintaan pengguna tanpa spesifikasi nyata.
+  throw new Error(
+    'Gagal memperbarui PRD: layanan AI (router) tidak bisa dihubungi atau mengembalikan jawaban yang tidak valid.' +
+    ' Tidak ada task yang ditambahkan. Periksa koneksi router dan API key, lalu coba lagi.'
+  );
 }
