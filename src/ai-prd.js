@@ -58,14 +58,57 @@ export async function fetchAvailableModels() {
   }
 }
 
+// Router kadang menjawab dengan JSON biasa, kadang dengan format SSE
+// ("data: {...}\n\ndata: [DONE]"). Versi lama memotong di penanda [DONE] pertama
+// lalu mengambil dari "{" pertama sampai "}" terakhir, sehingga kalau ada lebih
+// dari satu penanda, potongannya justru menyeberangi blok JSON lain dan rusak
+// ("Extra data" / "Unexpected token #"). Sekarang blok SSE diurai satu per satu
+// dan objek yang benar-benar berisi choices yang dipakai.
 function parseRouterResponse(rawHttpText) {
-  const cleaned = rawHttpText.split(/\ndata:\s*\[DONE\]/i)[0].trim();
-  const firstOpen = cleaned.indexOf('{');
-  const lastClose = cleaned.lastIndexOf('}');
-  if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
-    return JSON.parse(cleaned.substring(firstOpen, lastClose + 1));
+  const raw = String(rawHttpText || '').trim();
+
+  // Coba JSON utuh dulu (respons non-streaming biasa).
+  try {
+    const direct = JSON.parse(raw);
+    if (direct && typeof direct === 'object') return direct;
+  } catch { /* lanjut ke jalur SSE */ }
+
+  // Jalur SSE: ambil setiap baris "data: ..." yang bukan [DONE].
+  const candidates = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const m = line.match(/^data:\s*(.+)$/i);
+    if (!m) continue;
+    const payload = m[1].trim();
+    if (!payload || /^\[DONE\]$/i.test(payload)) continue;
+    try {
+      candidates.push(JSON.parse(payload));
+    } catch { /* blok parsial, lewati */ }
   }
-  return JSON.parse(cleaned);
+  // Pilih kandidat terakhir yang punya choices (paling lengkap).
+  const withChoices = candidates.filter(c => c && c.choices);
+  if (withChoices.length > 0) return withChoices[withChoices.length - 1];
+
+  // Fallback terakhir: potong dari "{" pertama, tapi hanya kalau seimbang.
+  const firstOpen = raw.indexOf('{');
+  if (firstOpen !== -1) {
+    let depth = 0, inStr = false, esc = false;
+    for (let i = firstOpen; i < raw.length; i++) {
+      const ch = raw[i];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          try { return JSON.parse(raw.substring(firstOpen, i + 1)); } catch { /* coba lagi */ }
+        }
+      }
+    }
+  }
+
+  throw new Error('Router mengembalikan format yang tidak dikenali');
 }
 
 // Terjemahkan error router mentah menjadi pesan yang bisa ditindaklanjuti
@@ -91,6 +134,17 @@ function routerErrorMessage(raw, action) {
   }
   if (/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|abort/i.test(text)) {
     return `Gagal ${action}: layanan AI tidak bisa dihubungi. Periksa koneksi router dan API key (PRDMAKER_BASE_URL / PRDMAKER_API_KEY), lalu coba lagi.`;
+  }
+  if (/is not valid JSON|Unexpected token|Expected property name|teks biasa, bukan JSON/i.test(text)) {
+    return `Gagal ${action}: model ini menjawab dengan teks biasa, bukan format JSON yang dibutuhkan, ` +
+      'sehingga hasilnya tidak bisa dibaca. Ini kelemahan model, bukan kesalahan Anda: ' +
+      'pilih model lain di pemilih model (disarankan oa/gemini-3.8-flash-high), lalu coba lagi.';
+  }
+  if (/content kosong|tidak mengembalikan isi jawaban/i.test(text)) {
+    return `Gagal ${action}: model tidak mengirim isi jawaban sama sekali. Coba lagi, atau pilih model lain di pemilih model.`;
+  }
+  if (/format yang tidak dikenali/i.test(text)) {
+    return `Gagal ${action}: balasan dari layanan AI tidak bisa dibaca (format tidak dikenal). Coba lagi, atau pilih model lain.`;
   }
   return `Gagal ${action}: layanan AI mengembalikan jawaban yang tidak valid. Coba lagi, atau ganti model di pemilih model.`;
 }
@@ -154,28 +208,10 @@ export async function generateClarifications(userIdea, name, model) {
   if (routerCfg && routerCfg.apiKey) {
     try {
       console.log(`[AI-CLARIFY] Requesting to model: ${chosenModel}...`);
-      const res = await fetch(`${routerCfg.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${routerCfg.apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: chosenModel,
-          messages: [
-            { role: 'system', content: CLARIFY_SYSTEM_PROMPT },
-            { role: 'user', content: `Nama Project: ${name || 'Belum ada'}\nIde: ${userIdea}` }
-          ],
-          temperature: 0.2
-        })
-      });
-
-      const rawText = await res.text();
-      if (!res.ok) throw new Error(`Router HTTP ${res.status}: ${rawText}`);
-
-      const routerJson = parseRouterResponse(rawText);
-      const rawContent = routerJson.choices?.[0]?.message?.content || '{}';
-      return JSON.parse(extractJSON(rawContent));
+      return await callRouter(
+        routerCfg, chosenModel, CLARIFY_SYSTEM_PROMPT,
+        `Nama Project: ${name || 'Belum ada'}\nIde: ${userIdea}`
+      );
     } catch (err) {
       lastRouterError = err.message;
       console.error('[AI-CLARIFY] Error:', err.message);
@@ -474,7 +510,7 @@ PRD sebelumnya gagal pemeriksaan otomatis karena masalah berikut:
 
 Perbaiki SEMUA masalah di atas. Pastikan untuk SETIAP modul pada "features" ada minimal satu task di "tasks" yang menyebut modul tersebut (isi field "module" pada task dengan nama modul yang sama persis). Setiap integrasi pihak ketiga dan webhook wajib punya task sendiri. Keluarkan JSON lengkap yang sudah diperbaiki.`;
 
-async function callRouter(routerCfg, chosenModel, systemPrompt, userPrompt) {
+async function callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt = 1) {
   const res = await fetch(`${routerCfg.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -487,14 +523,36 @@ async function callRouter(routerCfg, chosenModel, systemPrompt, userPrompt) {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      temperature: 0.2
+      temperature: 0.2,
+      // Minta penyedia memaksa keluaran JSON bila didukung. Sebagian router
+      // mengabaikan field ini, jadi hasilnya tetap divalidasi di bawah.
+      response_format: { type: 'json_object' }
     })
   });
   const rawText = await res.text();
   if (!res.ok) throw new Error(`Router HTTP ${res.status}: ${rawText}`);
   const routerJson = parseRouterResponse(rawText);
-  const rawContent = routerJson.choices?.[0]?.message?.content || '{}';
-  return JSON.parse(extractJSON(rawContent));
+  const rawContent = routerJson.choices?.[0]?.message?.content;
+  if (!rawContent || typeof rawContent !== 'string') {
+    throw new Error('Model tidak mengembalikan isi jawaban (content kosong)');
+  }
+  const jsonText = extractJSON(rawContent);
+  try {
+    return JSON.parse(jsonText);
+  } catch {
+    // Model menjawab dengan prosa/markdown, bukan JSON. Coba sekali lagi dengan
+    // peringatan tegas: sebagian model (mis. deepseek-v4.1-flash) butuh ini.
+    if (attempt === 1) {
+      console.warn('[AI] Jawaban bukan JSON, mengulang sekali dengan instruksi tegas...');
+      const strict = userPrompt + `
+
+=== PERINGATAN FORMAT (WAJIB) ===
+Jawaban sebelumnya ditolak karena berisi teks/markdown, bukan JSON. Jangan menulis judul, penjelasan, atau kalimat apa pun di luar JSON. Jangan memakai pagar kode \`\`\`. Karakter pertama jawabanmu HARUS "{" dan karakter terakhir HARUS "}". Keluarkan JSON lengkap sekarang.`;
+      return await callRouter(routerCfg, chosenModel, systemPrompt, strict, attempt + 1);
+    }
+    const head = rawContent.trim().slice(0, 40).replace(/\s+/g, ' ');
+    throw new Error(`Model menjawab dengan teks biasa, bukan JSON (diawali "${head}"). Jawaban tidak bisa dibaca.`);
+  }
 }
 
 export async function generatePRDFromPrompt(userIdea, name, clarifications = [], model) {
@@ -628,28 +686,7 @@ Tugas: Buatkan penambahan fitur dan task eksekusi lanjutan untuk memenuhi permin
   if (routerCfg && routerCfg.apiKey) {
     try {
       console.log(`[AI-APPEND] Processing change request via ${chosenModel}...`);
-      const res = await fetch(`${routerCfg.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${routerCfg.apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: chosenModel,
-          messages: [
-            { role: 'system', content: APPEND_CHANGE_SYSTEM_PROMPT },
-            { role: 'user', content: contextPrompt }
-          ],
-          temperature: 0.2
-        })
-      });
-
-      const rawText = await res.text();
-      if (!res.ok) throw new Error(`Router HTTP ${res.status}: ${rawText}`);
-
-      const routerJson = parseRouterResponse(rawText);
-      const rawContent = routerJson.choices?.[0]?.message?.content || '{}';
-      return JSON.parse(extractJSON(rawContent));
+      return await callRouter(routerCfg, chosenModel, APPEND_CHANGE_SYSTEM_PROMPT, contextPrompt);
     } catch (err) {
       lastRouterError = err.message;
       console.error('[AI-APPEND] Error:', err.message);
