@@ -1048,10 +1048,16 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
           `Masalah: ${detailProblems.join('; ')}`
         );
         const candidate = { ...detail, ...fixed };
-        const named = Array.isArray(candidate.features)
+        // Gabungan bisa menghasilkan campuran dua skema: kalau model menjawab
+        // dengan field lain (description/files/acceptanceCriteria) alih-alih
+        // "spec", maka "fixed" tidak punya spec sama sekali. Terukur: 11 task
+        // masuk tanpa spec dan PRD ditolak meski percobaan pertama benar.
+        const usable = Array.isArray(candidate.features)
           && candidate.features.length
-          && candidate.features.every(f => f && typeof f.module === 'string' && f.module.trim());
-        if (named && problemsFor({ ...identity, ...core, ...candidate }) < problemsFor({ ...identity, ...core, ...detail })) {
+          && candidate.features.every(f => f && typeof f.module === 'string' && f.module.trim())
+          && (!Array.isArray(fixed?.features) || !Array.isArray(detail?.features)
+              || fixed.features.length >= detail.features.length);
+        if (usable && problemsFor({ ...identity, ...core, ...candidate }) < problemsFor({ ...identity, ...core, ...detail })) {
           detailFixed = candidate;
         } else {
           console.warn('[AI-PRD] Perbaikan rincian tidak memperbaiki; memakai hasil pertama.');
@@ -1077,12 +1083,21 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     let problems = validatePRD(parsed);
     if (problems.length) {
       console.warn(`[AI-PRD] Tahap 2 ditolak validator: ${problems.join('; ')}`);
-      tasksRes = await callWithTruncationRetry(
+      const retryRes = await callWithTruncationRetry(
         tasksSystemPrompt,
         context + `Perbaiki tasks. Jangan mengubah kerangka. Masalah: ${problems.join('; ')}`
       );
-      parsed = { ...skeleton, tasks: Array.isArray(tasksRes?.tasks) ? tasksRes.tasks : [] };
-      problems = validatePRD(parsed);
+      // Perbaikan hanya dipakai kalau benar-benar mengurangi masalah. Model
+      // kadang menjawab dengan skema lain (description/files/acceptanceCriteria
+      // alih-alih spec), dan menimpanya membuat SEMUA task kehilangan spec.
+      const candidate = { ...skeleton, tasks: Array.isArray(retryRes?.tasks) ? retryRes.tasks : [] };
+      const retryProblems = validatePRD(candidate);
+      if (retryProblems.length < problems.length) {
+        parsed = candidate;
+        problems = retryProblems;
+      } else {
+        console.warn('[AI-PRD] Perbaikan tasks tidak memperbaiki; memakai hasil pertama.');
+      }
     }
     if (problems.length) throw validationError('tasks', problems);
     console.log(`[AI-PRD] PRD lolos validasi: ${parsed.tasks.length} task, ${parsed.features.length} modul.`);
