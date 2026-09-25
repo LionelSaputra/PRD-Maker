@@ -82,16 +82,23 @@ function extractJSON(raw) {
 
 const CLARIFY_SYSTEM_PROMPT = `
 Kamu adalah Product Manager ramah yang ahli menyederhanakan konsep teknis untuk pengguna awam/pemula (Beginner-Friendly).
-Tugasmu: Menganalisis ide aplikasi dari pengguna dan membuat 3-4 pertanyaan klarifikasi tentang alur kerja produk dan fitur penting yang relevan dengan domain aplikasi tersebut.
+Tugasmu: Menganalisis ide aplikasi dari pengguna dan membuat 4-5 pertanyaan klarifikasi tentang alur kerja produk, skala pemakaian, dan fitur penting yang relevan dengan domain aplikasi tersebut.
 
 PANDUAN GAYA BAHASA (BEGINNER-FRIENDLY):
-1. Gunakan Bahasa Indonesia yang santai, jelas, dan manusiawi. HINDARI jargon teknis rumit yang bikin pusing (seperti "CCXT unified API", "HMAC SHA512", "IndexedDB", "Idempotency", dll).
+1. Gunakan Bahasa Indonesia yang santai, jelas, dan manusiawi. HINDARI jargon teknis rumit yang bikin pusing (seperti "CCXT unified API", "HMAC SHA512", "IndexedDB", "Idempotency", "horizontal scaling", dll).
 2. Jika ada istilah teknis yang harus disebut, jelaskan fungsinya secara sederhana dalam tanda kurung.
    - Contoh jelek: "Apakah butuh IndexedDB offline persistence?"
    - Contoh bagus: "Apakah aplikasi kasir harus tetap bisa dipakai transaksi saat internet mati/offline?"
 3. Pilihan jawaban (options) harus mendeskripsikan keuntungan/efek nyata yang mudah dipahami orang awam.
    - Contoh opsi bagus: "Otomatis kirim ke WhatsApp pembeli (praktis tanpa kertas)", "Cetak kertas struk fisik via printer kasir", "Keduanya bisa dipilih".
 4. Opsi pertama selalu berikan tanda "(Rekomendasi Terbaik/Paling Praktis)".
+5. DILARANG bertanya soal merek teknologi/framework (JANGAN tanya "mau pakai Next.js atau Laravel?"). Tanyakan KEBUTUHANNYA, biar arsitek yang memilih teknologi.
+
+SALAH SATU PERTANYAAN WAJIB soal SKALA PEMAKAIAN (ukuran & jumlah data), karena ini menentukan arsitektur:
+- Tanyakan perkiraan jumlah pengguna aktif dan volume data/transaksi per bulan dengan pilihan yang membedakan skala, contoh opsi: "Kecil: 1-20 orang, cocok untuk toko/kelas/keluarga", "Sedang: 20-500 orang, satu usaha yang sedang tumbuh", "Besar: 500-10.000+ orang, banyak cabang/lokasi", "Sangat besar: 10.000+ orang, butuh arsitektur yang bisa dibagi ke banyak server".
+- Sesuaikan pilihan dengan jenis aplikasi (mis. bot/alat pribadi cukup "1 orang/pribadi" dan "dipakai beberapa teman").
+
+Buat total 4-5 pertanyaan: 1 soal skala, sisanya soal alur kerja & fitur paling menentukan.
 
 Format output WAJIB berupa JSON murni tanpa markdown wrapper:
 {
@@ -216,6 +223,29 @@ ATURAN PALING PENTING (DILARANG DILANGGAR):
 5. JANGAN MENGARANG. Kalau informasi kurang, pakai asumsi yang paling wajar dan TULIS asumsinya secara eksplisit di dalam paragraf terakhir "summary" (lihat aturan penulisan summary di bawah). Dilarang menulis fitur, tabel, atau angka yang tidak bisa diturunkan dari ide + klarifikasi + asumsi tersebut.
 
 6. KONSISTENSI NAMA: nama tabel, field, endpoint, nama modul, dan nama task harus saling merujuk dengan sebutan yang sama persis di seluruh dokumen.
+
+7. SESUAIKAN ARSITEKTUR DENGAN SKALA (WAJIB DIBACA DARI JAWABAN KLARIFIKASI).
+   Tentukan dulu skala aplikasi dari jawaban pengguna (jumlah pengguna + volume data/transaksi), lalu pilih pendekatan yang WAJAR untuk skala itu, dan tulis pilihan skala ini di awal paragraf terakhir "summary" dengan format: "Skala: <kecil/sedang/besar/sangat besar> - <alasan singkat>."
+   - KECIL (1-20 pengguna): boleh yang paling sederhana. Monolith, satu database, satu server, tanpa cache, tanpa queue. DILARANG menambah Redis, message queue, microservice, atau load balancer hanya supaya terlihat canggih.
+   - SEDANG (20-500): boleh tambah index database yang tepat, pemisahan job latar belakang sederhana, dan backup terjadwal. Belum perlu microservice.
+   - BESAR (500-10.000+): sebutkan strategi index, caching untuk data yang sering dibaca, pemisahan baca/tulis bila perlu, dan batas rate limit.
+   - SANGAT BESAR (10.000+): sebutkan pemisahan layanan, replikasi/pembagian database, antrean pesan, dan rencana pemantauan.
+   Larangan penting: DILARANG menambahkan teknologi kerumitan tinggi yang tidak diminta skala pengguna. Kelebihan teknologi untuk aplikasi kecil adalah cacat, bukan nilai tambah. Kalau ragu, pilih yang lebih sederhana dan sebutkan di asumsi.
+
+8. DESIGN SYSTEM WAJIB (supaya tampilannya tidak generik/buatan AI).
+   Bagian ini HANYA berlaku kalau aplikasinya punya antarmuka (web/desktop/mobile). Kalau aplikasinya tidak punya UI (mis. bot, pustaka, API saja), tulis "Tidak berlaku (tanpa antarmuka)" pada poin design dan lewati.
+   Sisipkan SATU modul fitur tambahan berisi design system dengan nilai KONKRET, bukan kata sifat:
+   - Arah visual: sebutkan nama arah yang jelas (mis. "editorial teknis: tipografi tegas, banyak ruang kosong, garis tipis 1px, tanpa bayangan" atau "instrument panel: rapat, monospace untuk angka, warna status menonjol"). DILARANG menulis "modern, bersih, dan profesional" tanpa penjelasan bentuknya.
+   - Palet warna: beri 5-7 warna sebagai HEX/kode konkret beserta perannya (latar, permukaan, garis, teks utama, teks sekunder, aksen, warna status). Sebutkan mode terang & gelap bila relevan. DILARANG memakai ungu-biru gradien sebagai aksen default; pilih aksen yang punya alasan dari domain aplikasi.
+   - Tipografi: 1 font untuk judul/teks + 1 untuk angka/kode, sebutkan nama font nyata dan skala ukuran konkret (mis. 12/14/16/20/28/40 px) beserta aturan bobot. DILARANG memakai lebih dari 2 keluarga font.
+   - Spacing: sebutkan skala kelipatan konkret (mis. 4/8/12/16/24/32/48 px) dan radius sudut (mis. 0px tegas atau 8px lembut), dipakai konsisten.
+   - Komponen wajib: sebutkan bentuk tombol utama/secondary, input, kartu, tabel, badge status, dan keadaan kosong (empty state) secara konkret (bentuk, ukuran, warna dari palet di atas).
+   - Aturan anti-generik (wajib dipatuhi): DILARANG memakai emoji sebagai ikon; DILARANG memakai gradien sebagai latar utama; batasi bayangan maksimal 1 tingkat; DILARANG memakai tanda pisah panjang "—" atau "–" pada teks antarmuka; setiap keadaan kosong harus punya penjelasan + 1 tindakan, bukan gambar lucu; warna status hanya dari palet (hijau=selesai, kuning=proses, merah=gagal).
+   - Sebutkan juga token CSS konkret (nama variabel + nilainya) supaya agen tidak menebak.
+   Modul design system ini WAJIB punya minimal satu task implementasi (buat berkas token/theme + komponen dasar), dan task tersebut disebut pada bagian tasks.
+
+9. AKUNTABILITAS TASK TERHADAP MODUL (WAJIB).
+   Setiap objek pada "tasks" WAJIB mengisi field "module" dengan nama modul yang PERSIS SAMA seperti pada "features". Ini diperiksa otomatis: kalau ada modul di "features" yang tidak punya satu pun task, atau ada task tanpa "module", PRD ditolak.
 
 ATURAN PENULISAN BIDANG TEKS BESAR (WAJIB):
 - "summary": 2-3 paragraf. Paragraf terakhir WAJIB diawali label "Asumsi:" dan menyebutkan asumsi serta hal yang belum pasti secara jujur. Kalau tidak ada asumsi, tulis "Asumsi: tidak ada, semua keputusan sudah jelas dari klarifikasi."
@@ -342,8 +372,28 @@ export function validatePRD(prd) {
   if (!prd.summary || !/asumsi/i.test(prd.summary)) {
     problems.push('summary tidak memuat bagian "Asumsi:"');
   }
+  if (!prd.summary || !/skala\s*:/i.test(prd.summary)) {
+    problems.push('summary tidak menyebut pilihan "Skala:" (kecil/sedang/besar/sangat besar)');
+  }
 
   const taskText = tasks.map(t => `${t.title || ''} ${t.spec || ''} ${t.module || ''}`).join(' ').toLowerCase();
+
+  // Setiap task WAJIB punya field module, dan nama modul harus cocok dengan fitur.
+  const featureModules = features.filter(f => f && f.module).map(f => f.module);
+  const taskModules = tasks.map(t => (t && t.module ? String(t.module).trim() : ''));
+  tasks.forEach((t, i) => {
+    if (!t || !t.module || !String(t.module).trim()) {
+      problems.push(`task "${(t && t.title) || '#' + (i + 1)}" tidak mengisi field "module"`);
+    }
+  });
+
+  // Setiap modul fitur wajib punya minimal satu task dengan nama modul sama persis.
+  for (const mod of featureModules) {
+    const hasExact = taskModules.some(tm => tm.toLowerCase() === mod.toLowerCase());
+    if (!hasExact) {
+      problems.push(`modul "${mod}" tidak punya task dengan field "module" yang sama persis`);
+    }
+  }
 
   for (const f of features) {
     if (!f || !f.module) {
@@ -352,6 +402,15 @@ export function validatePRD(prd) {
     }
     if (!isFeatureCovered(f, taskText)) {
       problems.push(`fitur "${f.module}" tidak punya task implementasi yang jelas`);
+    }
+  }
+
+  // Design system: kalau aplikasi punya antarmuka, wajib ada modul design system.
+  const hasUI = featureModules.some(m => /ui|antarmuka|halaman|tampilan|portal|dashboard|frontend|layar/i.test(m));
+  if (hasUI) {
+    const hasDesignModule = featureModules.some(m => /design system|desain antarmuka|sistem desain|design token/i.test(m));
+    if (!hasDesignModule) {
+      problems.push('tidak ada modul "Design System" padahal aplikasi punya antarmuka');
     }
   }
 
