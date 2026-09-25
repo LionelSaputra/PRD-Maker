@@ -294,12 +294,12 @@ export function getDesignSystemRequirement() {
   return `
 SYARAT MODUL "Design System" (diperiksa otomatis):
 Untuk produk yang punya antarmuka, features WAJIB memuat satu modul bernama persis "Design System". Modul itu harus berisi:
-- minimal 3 token warna bernama dengan nilai HEX/OKLCH nyata,
-- token tipografi (font, ukuran, berat, line-height),
-- spacing dan radius dalam px/rem,
+- token warna bernama dengan nilai nyata (minimal 3 nilai HEX/OKLCH: latar, permukaan, aksen),
+- token tipografi: sebut keluarga font, ukuran, bobot, dan line-height secara eksplisit,
+- spacing dan radius konkret dalam px/rem,
 - strategi border atau bayangan,
-- aksesibilitas: kontras minimal 4.5:1, focus ring, label programatik, alt text,
-- state UI: loading, kosong, gagal.
+- bukti aksesibilitas: kontras (minimal 4.5:1), focus ring, label programatik, alt text,
+- state UI: sebut state memuat/skeleton, kosong, dan gagal beserta tampilannya.
 Untuk CLI/bot/library tanpa antarmuka, modul ini DILARANG ada.`;
 }
 
@@ -757,11 +757,12 @@ export function validatePRD(prd, stage = 'full') {
     const text = JSON.stringify(designFeature);
     const colorCount = (text.match(/#[0-9a-f]{3,8}\b|oklch\s*\(/gi) || []).length;
     if (colorCount < 3) problems.push('Design System belum memberi token warna konkret');
-    if (!/font|typography|line.height/i.test(text)) problems.push('Design System belum memberi token typography');
+    if (!/font|tipografi|typography|line.height|ukuran huruf|jenis huruf|bobot/i.test(text)) problems.push('Design System belum memberi token typography');
     if (!/spacing|space|gap|padding|\d+(?:px|rem)/i.test(text)) problems.push('Design System belum memberi spacing konkret');
-    if (!/radius|border|shadow/i.test(text)) problems.push('Design System belum memberi bentuk atau treatment konkret');
-    if (!/keyboard|tab order|focus|screen reader|reader|kontras|wcag|alt text|label/i.test(text)) problems.push('Design System belum memuat bukti aksesibilitas');
-    if (!/loading|error|empty|keadaan kosong|kesalahan/i.test(text)) problems.push('Design System belum memuat state UI penting');
+    if (!/radius|border|shadow|bayangan|sudut/i.test(text)) problems.push('Design System belum memberi bentuk atau treatment konkret');
+    if (!/keyboard|tab order|focus|screen reader|reader|kontras|contrast|wcag|alt text|label|pembaca layar|terprogram/i.test(text)) problems.push('Design System belum memuat bukti aksesibilitas');
+    // Istilah Indonesia juga sah: model menulis "memuat", "kosong", "gagal".
+    if (!/loading|error|empty|keadaan kosong|kesalahan|memuat|kosong|gagal|muat ulang|tidak ada data|skeleton/i.test(text)) problems.push('Design System belum memuat state UI penting');
     if (/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(text)) problems.push('Design System memakai emoji sebagai ikon');
   }
 
