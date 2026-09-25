@@ -7,7 +7,7 @@ import { designTemplatePromptBlock } from './design-templates.js';
 // tertentu, sehingga repo tidak bisa dijalankan di mesin lain. Sekarang dibaca
 // dari environment lebih dulu, baru jatuh ke berkas konfigurasi lokal.
 const DEFAULT_BASE_URL = 'http://127.0.0.1:20127/v1';
-const DEFAULT_MODEL = 'oa/gemini-3.8-flash-high';
+const DEFAULT_MODEL = 'oa/mimo-v2.6-flash';
 const DEFAULT_CONFIG_PATH = join(os.homedir(), '.prdmaker', 'config.yaml');
 
 function readConfigFile() {
@@ -40,21 +40,26 @@ function getRouterConfig() {
 
 export async function fetchAvailableModels() {
   const routerCfg = getRouterConfig();
-  if (!routerCfg || !routerCfg.apiKey) return ['oa/gemini-3.8-flash-high'];
+  if (!routerCfg || !routerCfg.apiKey) return ['oa/mimo-v2.6-flash'];
 
   try {
     const res = await fetch(`${routerCfg.baseUrl}/models`, {
       headers: { 'Authorization': `Bearer ${routerCfg.apiKey}` }
     });
-    if (!res.ok) return ['oa/gemini-3.8-flash-high'];
+    if (!res.ok) return ['oa/mimo-v2.6-flash'];
     const data = await res.json();
     const all = (data.data || []).map(m => m.id);
-    // Filter model aktif saja untuk mencegah error 403 / plan limit
-    const supported = all.filter(m => m.includes('gemini-3.8') || m.includes('deepseek-v4'));
-    return supported.length > 0 ? supported : ['oa/gemini-3.8-flash-high'];
+    // Filter model teks yang hidup di plan saat ini (diverifikasi via probe:
+    // mimo-v2.6-flash & glm-5.3 jawab OK; gemini/deepseek/qwen/claude/gpt 403
+    // model_not_available di plan free, deepseek-free 429 kuota habis).
+    // Model gambar (ali-*) dikecualikan: tidak bisa mengeluarkan JSON PRD.
+    const supported = all.filter(m =>
+      m.includes('mimo-v2.6-flash') || m === 'oa/glm-5.3'
+    );
+    return supported.length > 0 ? supported : ['oa/mimo-v2.6-flash'];
   } catch (err) {
     console.error('Failed to fetch models:', err.message);
-    return ['oa/gemini-3.8-flash-high'];
+    return ['oa/mimo-v2.6-flash'];
   }
 }
 
@@ -116,6 +121,12 @@ function parseRouterResponse(rawHttpText) {
 // dihubungi", padahal penyebab paling sering adalah kuota model habis.
 function routerErrorMessage(raw, action) {
   const text = String(raw || '');
+  // concurrent_limit dicek DULU sebelum pola 429 umum: sama-sama HTTP 429 tapi
+  // artinya beda (request lain masih jalan, bukan kuota habis). Kalau tertukar,
+  // pengguna disuruh ganti model padahal cukup tunggu sebentar.
+  if (/concurrent_limit|Batas request bersamaan/i.test(text)) {
+    return `Gagal ${action}: ada permintaan lain yang masih berjalan. Tunggu sebentar, lalu coba lagi.`;
+  }
   if (/429|free_shared_pool_exhausted|Kuota gratis/i.test(text)) {
     return `Gagal ${action}: kuota model AI yang dipilih sudah habis. ` +
       'Pilih model lain di pemilih model (di atas tombol Susun PRD), lalu coba lagi. ' +
@@ -129,16 +140,14 @@ function routerErrorMessage(raw, action) {
     return `Gagal ${action}: saldo atau tagihan penyedia AI bermasalah. ` +
       'Periksa langganan router, lalu coba lagi.';
   }
-  if (/concurrent_limit|Batas request bersamaan/i.test(text)) {
-    return `Gagal ${action}: ada permintaan lain yang masih berjalan. Tunggu sebentar, lalu coba lagi.`;
-  }
-  if (/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|abort/i.test(text)) {
-    return `Gagal ${action}: layanan AI tidak bisa dihubungi. Periksa koneksi router dan API key (PRDMAKER_BASE_URL / PRDMAKER_API_KEY), lalu coba lagi.`;
+  if (/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|abort|502|504|connect timeout|Timeout/i.test(text)) {
+    return `Gagal ${action}: layanan AI tidak merespons tepat waktu (koneksi ke penyedia model bermasalah). ` +
+      'Coba lagi sebentar lagi, atau pilih model lain di pemilih model.';
   }
   if (/is not valid JSON|Unexpected token|Expected property name|teks biasa, bukan JSON/i.test(text)) {
     return `Gagal ${action}: model ini menjawab dengan teks biasa, bukan format JSON yang dibutuhkan, ` +
       'sehingga hasilnya tidak bisa dibaca. Ini kelemahan model, bukan kesalahan Anda: ' +
-      'pilih model lain di pemilih model (disarankan oa/gemini-3.8-flash-high), lalu coba lagi.';
+      'pilih model lain di pemilih model (disarankan oa/mimo-v2.6-flash), lalu coba lagi.';
   }
   if (/content kosong|tidak mengembalikan isi jawaban/i.test(text)) {
     return `Gagal ${action}: model tidak mengirim isi jawaban sama sekali. Coba lagi, atau pilih model lain di pemilih model.`;
@@ -202,7 +211,7 @@ Format output WAJIB berupa JSON murni tanpa markdown wrapper:
 
 export async function generateClarifications(userIdea, name, model) {
   const routerCfg = getRouterConfig();
-  const chosenModel = model || routerCfg?.defaultModel || 'oa/gemini-3.8-flash-high';
+  const chosenModel = model || routerCfg?.defaultModel || 'oa/mimo-v2.6-flash';
   let lastRouterError = '';
 
   if (routerCfg && routerCfg.apiKey) {
@@ -511,26 +520,47 @@ PRD sebelumnya gagal pemeriksaan otomatis karena masalah berikut:
 Perbaiki SEMUA masalah di atas. Pastikan untuk SETIAP modul pada "features" ada minimal satu task di "tasks" yang menyebut modul tersebut (isi field "module" pada task dengan nama modul yang sama persis). Setiap integrasi pihak ketiga dan webhook wajib punya task sendiri. Keluarkan JSON lengkap yang sudah diperbaiki.`;
 
 async function callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt = 1) {
-  const res = await fetch(`${routerCfg.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${routerCfg.apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: chosenModel,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ],
-      temperature: 0.2,
-      // Minta penyedia memaksa keluaran JSON bila didukung. Sebagian router
-      // mengabaikan field ini, jadi hasilnya tetap divalidasi di bawah.
-      response_format: { type: 'json_object' }
-    })
-  });
+  let res;
+  try {
+    res = await fetch(`${routerCfg.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${routerCfg.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: chosenModel,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.2,
+        // Minta penyedia memaksa keluaran JSON bila didukung. Sebagian router
+        // mengabaikan field ini, jadi hasilnya tetap divalidasi di bawah.
+        response_format: { type: 'json_object' }
+      })
+    });
+  } catch (fetchErr) {
+    // Koneksi ke router putus/timeout: coba sekali lagi sebelum menyerah.
+    if (attempt === 1) {
+      console.warn('[AI] Koneksi ke router gagal, mengulang sekali...');
+      await new Promise(r => setTimeout(r, 2000));
+      return await callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt + 1);
+    }
+    throw fetchErr;
+  }
   const rawText = await res.text();
-  if (!res.ok) throw new Error(`Router HTTP ${res.status}: ${rawText}`);
+  if (!res.ok) {
+    // Error sementara dari penyedia (502/504/timeout upstream, atau request lain
+    // masih jalan): tunggu sebentar lalu coba sekali lagi, bukan langsung gagal.
+    // ponytail: retry 1x dengan jeda 3 dtk; tambah bila model sering 502 beruntun.
+    if (attempt === 1 && /50[234]|concurrent_limit|Batas request bersamaan|connect timeout|Timeout|ETIMEDOUT/i.test(rawText)) {
+      console.warn(`[AI] Router HTTP ${res.status} (sementara), mengulang sekali setelah jeda...`);
+      await new Promise(r => setTimeout(r, 3000));
+      return await callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt + 1);
+    }
+    throw new Error(`Router HTTP ${res.status}: ${rawText}`);
+  }
   const routerJson = parseRouterResponse(rawText);
   const rawContent = routerJson.choices?.[0]?.message?.content;
   if (!rawContent || typeof rawContent !== 'string') {
@@ -557,7 +587,7 @@ Jawaban sebelumnya ditolak karena berisi teks/markdown, bukan JSON. Jangan menul
 
 export async function generatePRDFromPrompt(userIdea, name, clarifications = [], model) {
   const routerCfg = getRouterConfig();
-  const chosenModel = model || routerCfg?.defaultModel || 'oa/gemini-3.8-flash-high';
+  const chosenModel = model || routerCfg?.defaultModel || 'oa/mimo-v2.6-flash';
   let lastRouterError = '';
 
   let userPrompt = `Project Name: ${name || 'Auto-detect'}\nIde Aplikasi: ${userIdea}\n`;
@@ -667,7 +697,7 @@ Format output WAJIB berupa JSON murni tanpa markdown wrapper:
 
 export async function appendFeatureChange(workspace, existingTasks = [], changeRequest, model) {
   const routerCfg = getRouterConfig();
-  const chosenModel = model || routerCfg?.defaultModel || 'oa/gemini-3.8-flash-high';
+  const chosenModel = model || routerCfg?.defaultModel || 'oa/mimo-v2.6-flash';
   let lastRouterError = '';
 
   const contextPrompt = `

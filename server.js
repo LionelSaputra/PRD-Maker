@@ -1456,11 +1456,8 @@ function renderHTML() {
           <div class="form-group">
             <label class="label">Pilihan Model AI Engine</label>
             <select class="select-input" id="ai-model-select">
-              <option value="oa/gemini-3.8-flash-high">Gemini 3.8 Flash High (Cepat & Cerdas)</option>
-              <option value="oa/claude-opus-4.8">Claude Opus 4.8 (Arsitektur FAANG Sangat Detail)</option>
-              <option value="oa/claude-sonnet-4.6">Claude Sonnet 4.6 (Presisi & Cepat)</option>
-              <option value="oa/deepseek-v4-pro-0813">DeepSeek V4 Pro (Spesialis Code Spec)</option>
-              <option value="oa/gpt-5.6-luna">GPT 5.6 Luna (Reasoning Model)</option>
+              <option value="oa/mimo-v2.6-flash">Mimo 2.6 Flash (disarankan)</option>
+              <option value="oa/glm-5.3">GLM 5.3</option>
             </select>
           </div>
 
@@ -1682,18 +1679,24 @@ function renderHTML() {
         const res = await fetch('/api/v1/models', { credentials: 'include', headers: { 'Accept': 'application/json' } });
         if (!res.ok) return;
         const data = await res.json();
-        if (data.models && data.models.length > 0) {
-          const select = document.getElementById('ai-model-select');
-          const currentVal = select.value;
-          select.innerHTML = '';
-          data.models.forEach(m => {
-            const opt = document.createElement('option');
-            opt.value = m;
-            opt.innerText = m;
-            if (m === currentVal || m === 'oa/gemini-3.8-flash-high') opt.selected = true;
-            select.appendChild(opt);
-          });
-        }
+        if (!data.models || data.models.length === 0) return;
+        const select = document.getElementById('ai-model-select');
+        const prev = select.value;
+        // Label ramah dibaca untuk model yang dikenal; sisanya pakai kode apa adanya.
+        const LABELS = {
+          'oa/mimo-v2.6-flash': 'Mimo 2.6 Flash (disarankan)',
+          'oa/glm-5.3': 'GLM 5.3'
+        };
+        select.innerHTML = '';
+        data.models.forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = m;
+          opt.innerText = LABELS[m] || m;
+          select.appendChild(opt);
+        });
+        // Pertahankan pilihan sebelumnya; kalau tidak ada, pakai model yang disarankan.
+        if ([...select.options].some(o => o.value === prev)) select.value = prev;
+        else if ([...select.options].some(o => o.value === 'oa/mimo-v2.6-flash')) select.value = 'oa/mimo-v2.6-flash';
       } catch (err) {
         console.warn('Failed to load dynamic model list:', err);
       }
