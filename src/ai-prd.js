@@ -537,6 +537,12 @@ function hasUIRequirement(prd) {
   for (const match of core.matchAll(negative)) {
     const after = core.slice(match.index + match[0].length, match.index + match[0].length + 24);
     if (/^\s*(?:framework|javascript|js\b|library|build|bundler|toolchain|template|component)/i.test(after)) continue;
+    // "tanpa UI" sering dipakai sebagai LABEL untuk keadaan khusus
+    // ("mode cetak (tanpa UI): tabel untuk desktop"), bukan pernyataan bahwa
+    // produknya tidak punya antarmuka. Terukur: kalimat seperti itu membuat
+    // aplikasi web ditolak sebagai produk non-UI, lalu Design System dibuang.
+    const before = core.slice(Math.max(0, match.index - 60), match.index);
+    if (/\(\s*$|:\s*$|,\s*$|(?:kecuali|mis\.|misalnya|contoh|khusus|hanya untuk|saat|ketika|mode|versi)\b[^.]{0,20}$/i.test(before)) continue;
     return false;
   }
   return /antarmuka|\bUI\b|frontend|web app|website|browser|desktop app|sistem desain|design system|Next\.js|React Native|\breact\b|\bvue\b|\bsvelte\b|tailwind/i.test(core);
