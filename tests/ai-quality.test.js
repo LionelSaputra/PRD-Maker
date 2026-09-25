@@ -9,6 +9,7 @@ import {
   fetchAvailableModels,
   generateClarifications,
   generatePRDFromPrompt,
+  normalizePRDFields,
   validatePRD
 } from '../src/ai-prd.js';
 import { skeleton as uiSkeleton, tasks as uiTasks, clarification } from './fixtures/prd.js';
@@ -113,6 +114,17 @@ try {
     assert.equal((calls[1].body.messages[0].content.match(/KONTRAK DESAIN ANTI AI-SLOP/g) || []).length, 1);
     assert.doesNotMatch(calls[2].body.messages[0].content, /KONTRAK DESAIN ANTI AI-SLOP/);
     assert.match(calls[3].body.messages[0].content, /(?:CLI|bot|API|library).*(?:tanpa UI|tanpa antarmuka)/iu);
+  });
+
+  await test('field names drifted by the model are normalised, values still validated', () => {
+    // Bentuk nyata dari live run: fitur memakai "name"/"id" alih-alih "module".
+    const drifted = { features: [{ id: 'auth-session', name: 'Login Sesi', description: 'd', acceptanceCriteria: ['a', 'b'] }] };
+    const fixed = normalizePRDFields(drifted);
+    assert.equal(fixed.features[0].module, 'Login Sesi');
+    // Nilai asli tidak ditimpa kalau module sudah ada.
+    assert.equal(normalizePRDFields({ features: [{ module: 'Arsip' }] }).features[0].module, 'Arsip');
+    // Task ikut dinormalisasi.
+    assert.equal(normalizePRDFields({ tasks: [{ id: 'TASK-01', name: 'Auth', spec: 'x' }] }).tasks[0].module, 'Auth');
   });
 
   await test('the detail stage is told the Design System module is mandatory', async () => {
