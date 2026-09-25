@@ -5,6 +5,45 @@ import { db } from './src/db.js';
 import { generateClarifications, generatePRDFromPrompt, fetchAvailableModels, appendFeatureChange } from './src/ai-prd.js';
 
 const PORT = process.env.PORT || 3333;
+const AUTH_CHECK_URL = process.env.AUTH_CHECK_URL || 'http://127.0.0.1:20131/check';
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://ngoding.lion3l.my.id';
+
+// --- Autentikasi ---------------------------------------------------------
+// Sebelumnya seluruh API terbuka: siapa pun yang tahu ID workspace bisa
+// membaca token-nya, lalu memakai token itu untuk menulis atau menghapus.
+// Aturan sekarang: endpoint workspace butuh cookie sesi web ATAU token
+// workspace (untuk CLI). Endpoint yang belum punya workspace (list, clarify,
+// generate) hanya boleh lewat cookie sesi web.
+
+function bearerToken(req) {
+  const auth = req.headers.authorization || '';
+  return auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+}
+
+async function hasValidSession(req) {
+  const cookie = req.headers.cookie || '';
+  if (!cookie) return false;
+  try {
+    const r = await fetch(AUTH_CHECK_URL, { headers: { Cookie: cookie } });
+    return r.ok;
+  } catch {
+    return false; // layanan auth mati -> tolak, jangan buka pintu
+  }
+}
+
+async function requireSession(req, res) {
+  if (await hasValidSession(req)) return true;
+  sendJson(res, 401, { error: 'Login diperlukan untuk mengakses fitur ini.' });
+  return false;
+}
+
+async function requireWorkspaceAuth(req, res, ws) {
+  const tok = bearerToken(req);
+  if (tok && ws && tok === ws.token) return true;
+  if (await hasValidSession(req)) return true;
+  sendJson(res, 401, { error: 'Login atau token workspace yang sah diperlukan.' });
+  return false;
+}
 
 function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -25,7 +64,10 @@ function parseJsonBody(req) {
 function sendJson(res, status, data) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
+    // CORS dibatasi ke domain app sendiri. Sebelumnya '*', sehingga situs lain
+    // bisa memanggil API ini dari browser pengunjung. CLI tidak butuh CORS.
+    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Vary': 'Origin',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS'
   });
@@ -37,7 +79,8 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+      'Vary': 'Origin',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS'
     });
@@ -53,6 +96,7 @@ const server = http.createServer(async (req, res) => {
 
     // 0.1 GET /api/v1/workspaces
     if (req.method === 'GET' && url.pathname === '/api/v1/workspaces') {
+      if (!await requireSession(req, res)) return;
       const list = db.prepare(`
         SELECT w.id, w.name, w.tagline, w.summary, w.created_at,
                COUNT(t.id) as total_tasks,
@@ -82,6 +126,7 @@ const server = http.createServer(async (req, res) => {
 
     // 1. POST /api/v1/workspaces/clarify
     if (req.method === 'POST' && url.pathname === '/api/v1/workspaces/clarify') {
+      if (!await requireSession(req, res)) return;
       const body = await parseJsonBody(req);
       if (!body.idea) {
         return sendJson(res, 400, { error: 'Field "idea" is required' });
@@ -92,6 +137,7 @@ const server = http.createServer(async (req, res) => {
 
     // 2. POST /api/v1/workspaces/generate
     if (req.method === 'POST' && url.pathname === '/api/v1/workspaces/generate') {
+      if (!await requireSession(req, res)) return;
       const body = await parseJsonBody(req);
       if (!body.idea) {
         return sendJson(res, 400, { error: 'Field "idea" is required' });
@@ -148,14 +194,9 @@ const server = http.createServer(async (req, res) => {
       const taskShort = parts[parts.length - 1];
       const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(wsId);
       if (!ws) return sendJson(res, 404, { error: 'Workspace not found' });
-      // Token wajib ada dan cocok. Sebelumnya header yang tidak dikirim sama
-      // sekali lolos begitu saja, sehingga siapa pun bisa mengubah status task
-      // tanpa autentikasi.
-      const auth = req.headers.authorization || '';
-      const provided = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-      if (!provided || provided !== ws.token) {
-        return sendJson(res, 401, { error: 'Missing or invalid token' });
-      }
+      // Token wajib ada dan cocok, atau cookie sesi web yang sah. Sebelumnya
+      // header yang tidak dikirim sama sekali lolos begitu saja.
+      if (!await requireWorkspaceAuth(req, res, ws)) return;
       const body = await parseJsonBody(req);
       const allowed = ['todo', 'in_progress', 'done', 'failed'];
       if (!body.status || !allowed.includes(body.status)) {
@@ -175,6 +216,7 @@ const server = http.createServer(async (req, res) => {
       const wsId = url.pathname.replace('/api/v1/workspaces/', '');
       const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(wsId);
       if (!ws) return sendJson(res, 404, { error: 'Workspace not found' });
+      if (!await requireWorkspaceAuth(req, res, ws)) return;
 
       const tasks = db.prepare('SELECT * FROM tasks WHERE workspace_id = ? ORDER BY id ASC').all(wsId);
       const completedCount = tasks.filter(t => t.status === 'done').length;
@@ -183,7 +225,9 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, {
         workspace: {
           id: ws.id,
-          token: ws.token,
+          // Token hanya dikembalikan ke pemilik token itu sendiri (CLI),
+          // tidak ke sembarang pemanggil.
+          token: bearerToken(req) === ws.token ? ws.token : undefined,
           name: ws.name,
           tagline: ws.tagline,
           summary: ws.summary,
@@ -202,6 +246,9 @@ const server = http.createServer(async (req, res) => {
     // 3.1 DELETE /api/v1/workspaces/:id
     if (req.method === 'DELETE' && url.pathname.startsWith('/api/v1/workspaces/')) {
       const wsId = url.pathname.replace('/api/v1/workspaces/', '');
+      const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(wsId);
+      if (!ws) return sendJson(res, 404, { error: 'Workspace not found' });
+      if (!await requireWorkspaceAuth(req, res, ws)) return;
       const delTasks = db.prepare('DELETE FROM tasks WHERE workspace_id = ?');
       const delWs = db.prepare('DELETE FROM workspaces WHERE id = ?');
       const delTx = db.transaction(() => {
@@ -218,6 +265,7 @@ const server = http.createServer(async (req, res) => {
       const wsId = parts[parts.length - 2];
       const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(wsId);
       if (!ws) return sendJson(res, 404, { error: 'Workspace not found' });
+      if (!await requireWorkspaceAuth(req, res, ws)) return;
 
       const body = await parseJsonBody(req);
       if (!body.changeRequest) {
