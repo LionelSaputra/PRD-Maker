@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import { join } from 'path';
+import { designTemplatePromptBlock } from './design-templates.js';
 
 // Konfigurasi penyedia AI. Dulu nilai-nilai ini di-hardcode ke satu server
 // tertentu, sehingga repo tidak bisa dijalankan di mesin lain. Sekarang dibaca
@@ -234,14 +235,16 @@ ATURAN PALING PENTING (DILARANG DILANGGAR):
 
 8. DESIGN SYSTEM WAJIB (supaya tampilannya tidak generik/buatan AI).
    Bagian ini HANYA berlaku kalau aplikasinya punya antarmuka (web/desktop/mobile). Kalau aplikasinya tidak punya UI (mis. bot, pustaka, API saja), tulis "Tidak berlaku (tanpa antarmuka)" pada poin design dan lewati.
-   Sisipkan SATU modul fitur tambahan berisi design system dengan nilai KONKRET, bukan kata sifat:
-   - Arah visual: sebutkan nama arah yang jelas (mis. "editorial teknis: tipografi tegas, banyak ruang kosong, garis tipis 1px, tanpa bayangan" atau "instrument panel: rapat, monospace untuk angka, warna status menonjol"). DILARANG menulis "modern, bersih, dan profesional" tanpa penjelasan bentuknya.
-   - Palet warna: beri 5-7 warna sebagai HEX/kode konkret beserta perannya (latar, permukaan, garis, teks utama, teks sekunder, aksen, warna status). Sebutkan mode terang & gelap bila relevan. DILARANG memakai ungu-biru gradien sebagai aksen default; pilih aksen yang punya alasan dari domain aplikasi.
-   - Tipografi: 1 font untuk judul/teks + 1 untuk angka/kode, sebutkan nama font nyata dan skala ukuran konkret (mis. 12/14/16/20/28/40 px) beserta aturan bobot. DILARANG memakai lebih dari 2 keluarga font.
-   - Spacing: sebutkan skala kelipatan konkret (mis. 4/8/12/16/24/32/48 px) dan radius sudut (mis. 0px tegas atau 8px lembut), dipakai konsisten.
-   - Komponen wajib: sebutkan bentuk tombol utama/secondary, input, kartu, tabel, badge status, dan keadaan kosong (empty state) secara konkret (bentuk, ukuran, warna dari palet di atas).
-   - Aturan anti-generik (wajib dipatuhi): DILARANG memakai emoji sebagai ikon; DILARANG memakai gradien sebagai latar utama; batasi bayangan maksimal 1 tingkat; DILARANG memakai tanda pisah panjang "—" atau "–" pada teks antarmuka; setiap keadaan kosong harus punya penjelasan + 1 tindakan, bukan gambar lucu; warna status hanya dari palet (hijau=selesai, kuning=proses, merah=gagal).
-   - Sebutkan juga token CSS konkret (nama variabel + nilainya) supaya agen tidak menebak.
+   Sisipkan SATU modul fitur tambahan berisi design system. WAJIB memilih SATU template dari daftar di bawah dan MENYALIN nilainya (jangan mengarang palet baru). Sebutkan template yang dipilih + alasannya di awal deskripsi modul.
+   Isi modul design system WAJIB memuat:
+   - Nama template yang dipilih + alasan singkat ("Reading this as: ...").
+   - Palet warna: SALIN nilai HEX template (latar, permukaan, garis, teks utama, teks sekunder, aksen, warna status hijau/kuning/merah) untuk mode terang DAN gelap bila relevan.
+   - Tipografi: nama font nyata dari template + skala ukuran konkret (px) + aturan bobot. Maksimal 2 keluarga font.
+   - Spacing: skala kelipatan konkret dari template + radius sudut.
+   - Kedalaman: strategi bayangan/garis dari template.
+   - Komponen wajib: bentuk tombol utama/secondary, input, kartu, tabel, badge status, keadaan kosong (bentuk, ukuran, warna dari palet di atas).
+   - Token CSS konkret (nama variabel + nilainya) supaya agen tidak menebak.
+   - Aturan motion: duration, properti yang dianimasikan, dan prefers-reduced-motion.
    Modul design system ini WAJIB punya minimal satu task implementasi (buat berkas token/theme + komponen dasar), dan task tersebut disebut pada bagian tasks.
 
 9. AKUNTABILITAS TASK TERHADAP MODUL (WAJIB).
@@ -298,6 +301,7 @@ Struktur JSON:
 }
 
 Sesuaikan seluruh PRD dengan keputusan yang dipilih pengguna di klarifikasi. Kalau jawaban pengguna bertentangan dengan kebiasaan teknologi biasanya, IKUTI pengguna.
+${designTemplatePromptBlock()}
 `;
 
 const STOPWORDS = new Set([
@@ -405,12 +409,35 @@ export function validatePRD(prd) {
     }
   }
 
-  // Design system: kalau aplikasi punya antarmuka, wajib ada modul design system.
+  // Design system: kalau aplikasi punya antarmuka, wajib ada modul design system
+  // yang isinya nilai konkret, bukan kata sifat.
   const hasUI = featureModules.some(m => /ui|antarmuka|halaman|tampilan|portal|dashboard|frontend|layar/i.test(m));
   if (hasUI) {
-    const hasDesignModule = featureModules.some(m => /design system|desain antarmuka|sistem desain|design token/i.test(m));
-    if (!hasDesignModule) {
+    const dsFeature = features.find(f => f && f.module && /design system|desain antarmuka|sistem desain|design token/i.test(f.module));
+    if (!dsFeature) {
       problems.push('tidak ada modul "Design System" padahal aplikasi punya antarmuka');
+    } else {
+      const dsText = JSON.stringify(dsFeature);
+      const hexes = dsText.match(/#[0-9a-fA-F]{6}/g) || [];
+      if (hexes.length < 6) {
+        problems.push(`modul Design System hanya memuat ${hexes.length} warna HEX (butuh minimal 6, disalin dari template)`);
+      }
+      if (!/reading this as|template|presisi|hangat|kepercayaan|data|utilitas|ekspresif/i.test(dsText)) {
+        problems.push('modul Design System tidak menyebut template yang dipilih + alasan');
+      }
+      if (!/reduced-motion|150|200|250|ms\b/i.test(dsText)) {
+        problems.push('modul Design System tidak memuat aturan motion (duration/reduced-motion)');
+      }
+      // Larangan anti-generik di teks desain.
+      if (/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(dsText)) {
+        problems.push('modul Design System memakai emoji (dilarang sebagai ikon)');
+      }
+      if (/\u2014|\u2013/.test(dsText)) {
+        problems.push('modul Design System memakai tanda pisah panjang (em-dash/en-dash)');
+      }
+      if (/\d+\s*(?:px|rem)[^.]*?space/i.test(dsText) === false && !/\b(?:4|8|12|16|24|32|48)\s*px\b/.test(dsText)) {
+        problems.push('modul Design System tidak menyebut skala spacing dalam px');
+      }
     }
   }
 
