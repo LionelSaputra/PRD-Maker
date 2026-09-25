@@ -1052,12 +1052,12 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     // Dipisah karena model gratis self-stop setelah ~2 kunci saat diminta semua
     // field sekaligus, dan 502 kalau prompt-nya dipangkas satu blok.
     console.log(`[AI-PRD] Tahap 1a/3 identitas via ${chosenModel}...`);
-    const identity = await callStage(
+    const identity = normalizePRDFields(await callStage(
       'identitas',
       PRD_IDENTITY_SYSTEM_PROMPT,
       userPrompt + '\nTulis identitas produk (projectName, tagline, summary) sekarang.',
       ['projectName', 'tagline', 'summary']
-    );
+    ));
 
     const decided = {
       projectName: identity.projectName,
@@ -1068,14 +1068,14 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       JSON.stringify(decided) + '\n';
 
     console.log(`[AI-PRD] Tahap 1b/3 stack & arsitektur via ${chosenModel}...`);
-    const core = await callStage(
+    const core = normalizePRDFields(await callStage(
       'stack & arsitektur',
       // Kontrak desain + referensi arah hanya sekali, di panggilan yang menulis
       // arsitektur, bukan di tiap panggilan.
       PRD_CORE_SYSTEM_PROMPT + '\n' + designTemplatePromptBlock() + '\n' + getDesignGuidance(),
       userPrompt + decidedText + '\nSusun techStack dan architectureOverview sekarang.',
       ['techStack', 'architectureOverview']
-    );
+    ));
 
     console.log(`[AI-PRD] Tahap 1c/3 fitur, DB & API via ${chosenModel}...`);
     const detail = normalizePRDFields(await callStage(
@@ -1113,7 +1113,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
         // masalahnya. Sebelumnya dipakai PRD_IDENTITY_SYSTEM_PROMPT yang tidak
         // pernah meminta alasan/alternatif arsitektur, sehingga perbaikan tidak
         // pernah bisa memenuhi syarat dan putaran selalu gagal.
-        const fixedProse = await callStage(
+        const fixedProse = normalizePRDFields(await callStage(
           'perbaikan identitas & arsitektur',
           PRD_IDENTITY_SYSTEM_PROMPT + '\n' + PRD_CORE_SYSTEM_PROMPT,
           userPrompt + `\nTulis ulang summary, techStack, dan architectureOverview sampai benar. ` +
@@ -1121,7 +1121,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
           '(pakai kata "dipilih"/"memilih" dan "ditolak"/"alternatif"). Ringkas dan bersih, tanpa huruf asing atau kata berulang. ' +
           `Masalah yang harus dibereskan: ${proseProblems.join('; ')}`,
           ['projectName', 'tagline', 'summary', 'techStack', 'architectureOverview']
-        );
+        ));
         if (fixedProse && problemsFor({ ...identity, ...core, ...detail, ...fixedProse }) < problemsFor(skeleton)) {
           prose = fixedProse;
         } else {
