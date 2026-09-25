@@ -68,6 +68,33 @@ function parseRouterResponse(rawHttpText) {
   return JSON.parse(cleaned);
 }
 
+// Terjemahkan error router mentah menjadi pesan yang bisa ditindaklanjuti
+// pengguna. Sebelumnya semua kegagalan tampil sebagai "router tidak bisa
+// dihubungi", padahal penyebab paling sering adalah kuota model habis.
+function routerErrorMessage(raw, action) {
+  const text = String(raw || '');
+  if (/429|free_shared_pool_exhausted|Kuota gratis/i.test(text)) {
+    return `Gagal ${action}: kuota model AI yang dipilih sudah habis. ` +
+      'Pilih model lain di pemilih model (di atas tombol Susun PRD), lalu coba lagi. ' +
+      'Model gratis biasanya pulih besok pukul 00:00 WIB.';
+  }
+  if (/403|model_not_available|tidak tersedia di plan/i.test(text)) {
+    return `Gagal ${action}: model yang dipilih tidak tersedia di langganan Anda. ` +
+      'Pilih model lain di pemilih model, lalu coba lagi.';
+  }
+  if (/402|insufficient|billing|saldo/i.test(text)) {
+    return `Gagal ${action}: saldo atau tagihan penyedia AI bermasalah. ` +
+      'Periksa langganan router, lalu coba lagi.';
+  }
+  if (/concurrent_limit|Batas request bersamaan/i.test(text)) {
+    return `Gagal ${action}: ada permintaan lain yang masih berjalan. Tunggu sebentar, lalu coba lagi.`;
+  }
+  if (/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|abort/i.test(text)) {
+    return `Gagal ${action}: layanan AI tidak bisa dihubungi. Periksa koneksi router dan API key (PRDMAKER_BASE_URL / PRDMAKER_API_KEY), lalu coba lagi.`;
+  }
+  return `Gagal ${action}: layanan AI mengembalikan jawaban yang tidak valid. Coba lagi, atau ganti model di pemilih model.`;
+}
+
 function extractJSON(raw) {
   if (!raw) return '{}';
   let str = raw.trim();
@@ -122,6 +149,7 @@ Format output WAJIB berupa JSON murni tanpa markdown wrapper:
 export async function generateClarifications(userIdea, name, model) {
   const routerCfg = getRouterConfig();
   const chosenModel = model || routerCfg?.defaultModel || 'oa/gemini-3.8-flash-high';
+  let lastRouterError = '';
 
   if (routerCfg && routerCfg.apiKey) {
     try {
@@ -149,32 +177,15 @@ export async function generateClarifications(userIdea, name, model) {
       const rawContent = routerJson.choices?.[0]?.message?.content || '{}';
       return JSON.parse(extractJSON(rawContent));
     } catch (err) {
+      lastRouterError = err.message;
       console.error('[AI-CLARIFY] Error:', err.message);
     }
   }
 
-  // Fallback
-  return {
-    projectSuggestion: name || "My Project",
-    briefAnalysis: "Ide project membutuhkan klarifikasi arsitektur & model bisnis.",
-    questions: [
-      {
-        id: "q1",
-        question: "Model bisnis dan target pengguna aplikasi?",
-        options: ["B2C (Platform langsung ke pengguna akhir)", "B2B (Pengguna internal / enterprise)", "C2C / Marketplace antar pengguna"]
-      },
-      {
-        id: "q2",
-        question: "Metode autentikasi dan akses?",
-        options: ["Email & Password + JWT", "OAuth (Google / GitHub)", "Passwordless / Magic Link OTP"]
-      },
-      {
-        id: "q3",
-        question: "Skema pembayaran / monetisasi utama?",
-        options: ["Payment Gateway Otomatis (Midtrans / Xendit)", "Manual Transfer Bank / Bukti Bayar", "Gratis / Freemium tanpa pembayaran awal"]
-      }
-    ]
-  };
+  // Router gagal (kuota habis, model tidak tersedia, dsb). Jangan mengembalikan
+  // 3 pertanyaan template yang sama untuk semua ide: pengguna akan menyangka itu
+  // hasil analisis AI, padahal generik dan tidak menyentuh skala aplikasinya.
+  throw new Error(routerErrorMessage(lastRouterError, 'menyusun pertanyaan klarifikasi'));
 }
 
 const DEEP_PRD_SYSTEM_PROMPT = `
@@ -489,6 +500,7 @@ async function callRouter(routerCfg, chosenModel, systemPrompt, userPrompt) {
 export async function generatePRDFromPrompt(userIdea, name, clarifications = [], model) {
   const routerCfg = getRouterConfig();
   const chosenModel = model || routerCfg?.defaultModel || 'oa/gemini-3.8-flash-high';
+  let lastRouterError = '';
 
   let userPrompt = `Project Name: ${name || 'Auto-detect'}\nIde Aplikasi: ${userIdea}\n`;
   if (clarifications && clarifications.length > 0) {
@@ -539,6 +551,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       console.log(`[AI-PRD] PRD lolos validasi: ${parsed.tasks?.length || 0} task, ${parsed.features?.length || 0} modul.`);
       return parsed;
     } catch (err) {
+      lastRouterError = err.message;
       console.error('[AI-PRD] Gagal generate via router:', err.message);
       if (err.validationProblems) throw err; // error validasi diteruskan apa adanya
     }
@@ -546,10 +559,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
 
   // Router offline / gagal. Jangan pernah mengembalikan PRD template palsu:
   // pengguna akan menyangka PRD-nya valid padahal isinya karangan.
-  throw new Error(
-    'Gagal menyusun PRD: layanan AI (router) tidak bisa dihubungi atau mengembalikan jawaban yang tidak valid.' +
-    ' PRD tidak dibuat. Periksa koneksi router dan API key (PRDMAKER_API_KEY / PRDMAKER_BASE_URL), lalu coba lagi.'
-  );
+  throw new Error(routerErrorMessage(lastRouterError, 'menyusun PRD'));
 }
 
 const APPEND_CHANGE_SYSTEM_PROMPT = `
@@ -600,6 +610,7 @@ Format output WAJIB berupa JSON murni tanpa markdown wrapper:
 export async function appendFeatureChange(workspace, existingTasks = [], changeRequest, model) {
   const routerCfg = getRouterConfig();
   const chosenModel = model || routerCfg?.defaultModel || 'oa/gemini-3.8-flash-high';
+  let lastRouterError = '';
 
   const contextPrompt = `
 PROJECT NAME: ${workspace.name}
@@ -640,14 +651,12 @@ Tugas: Buatkan penambahan fitur dan task eksekusi lanjutan untuk memenuhi permin
       const rawContent = routerJson.choices?.[0]?.message?.content || '{}';
       return JSON.parse(extractJSON(rawContent));
     } catch (err) {
+      lastRouterError = err.message;
       console.error('[AI-APPEND] Error:', err.message);
     }
   }
 
   // Router offline / gagal. Jangan mengembalikan "task" tempelan yang isinya
   // cuma mengulang permintaan pengguna tanpa spesifikasi nyata.
-  throw new Error(
-    'Gagal memperbarui PRD: layanan AI (router) tidak bisa dihubungi atau mengembalikan jawaban yang tidak valid.' +
-    ' Tidak ada task yang ditambahkan. Periksa koneksi router dan API key, lalu coba lagi.'
-  );
+  throw new Error(routerErrorMessage(lastRouterError, 'memperbarui PRD'));
 }
