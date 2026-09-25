@@ -553,7 +553,9 @@ Jika produk punya antarmuka (web, desktop, mobile), salah satu modul fitur HARUS
 - strategi border atau bayangan,
 - bukti aksesibilitas: kontras (minimal 4.5:1), focus ring, label programatik, alt text,
 - state UI penting: loading, kosong, gagal.
-Setiap modul termasuk Design System wajib punya minimal 2 acceptanceCriteria, dan SALAH SATUNYA wajib menguji ALUR GAGAL atau edge case. Kriteria bahagia saja tidak cukup: sebut minimal satu di antaranya kata seperti "gagal", "error", "ditolak", "duplikat", "kosong", "tidak valid", "timeout", atau "batas". Isi juga edgeCases dengan kasus gagal nyata.
+Setiap modul termasuk Design System wajib punya minimal 2 acceptanceCriteria, dan SALAH SATUNYA wajib menguji ALUR GAGAL atau edge case. Kriteria bahagia saja tidak cukup.
+Untuk setiap modul, tulis kriteria gagal dengan pola "… <kondisi buruk> … <hasil yang diharapkan>", contoh nyata: "Akses halaman admin oleh petugas biasa ditolak dengan 403 dan tidak menampilkan data apa pun.", "Nomor surat duplikat ditolak dengan 409 dan pesan kesalahan yang jelas.", "Proses gagal start bila SESSION_SECRET kosong."
+Setiap modul juga WAJIB mengisi edgeCases dengan minimal satu kasus gagal nyata (bukan array kosong).
 Untuk CLI/bot/library tanpa antarmuka, modul ini DILARANG ada. Jangan menulis nama modul lain di luar daftar yang sudah ditetapkan.
 
 Jangan menulis field lain. Jangan berhenti sebelum JSON ditutup.
