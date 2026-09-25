@@ -115,6 +115,19 @@ try {
     assert.match(calls[3].body.messages[0].content, /(?:CLI|bot|API|library).*(?:tanpa UI|tanpa antarmuka)/iu);
   });
 
+  await test('the detail stage is told the Design System module is mandatory', async () => {
+    // Regresi: syarat modul Design System dulu hanya ada di tahap arsitektur,
+    // padahal yang menulis features adalah tahap rincian.
+    const calls = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), detailOf(uiSkeleton), { tasks: uiTasks }]);
+    await generatePRDFromPrompt('Dashboard arsip', 'Arsip', [], 'oa/space-bunny-free');
+    const detailSystem = calls[2].body.messages[0].content;
+    assert.match(detailSystem, /SYARAT MODUL "Design System"/);
+    assert.match(detailSystem, /bernama persis "Design System"/);
+    assert.match(detailSystem, /CLI\/bot\/library tanpa antarmuka, modul ini DILARANG/);
+    // Tahap arsitektur tetap membawa kontrak craft penuh.
+    assert.match(calls[1].body.messages[0].content, /KONTRAK DESAIN ANTI AI-SLOP/);
+  });
+
   await test('a worse repair keeps the first detail, and the PRD still lands', async () => {
     process.env.PRDMAKER_API_KEY = 'offline-test-key';
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';

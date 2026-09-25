@@ -240,6 +240,22 @@ function parseMarkdownTasks(text) {
   return tasks;
 }
 
+// Ringkasan syarat modul Design System untuk prompt tahap rincian. Kontrak
+// penuh (getDesignGuidance) terlalu panjang untuk tahap ini dan pernah memicu
+// keluaran terpotong; yang dibutuhkan hanya syarat yang diperiksa validator.
+export function getDesignSystemRequirement() {
+  return `
+SYARAT MODUL "Design System" (diperiksa otomatis):
+Untuk produk yang punya antarmuka, features WAJIB memuat satu modul bernama persis "Design System". Modul itu harus berisi:
+- minimal 3 token warna bernama dengan nilai HEX/OKLCH nyata,
+- token tipografi (font, ukuran, berat, line-height),
+- spacing dan radius dalam px/rem,
+- strategi border atau bayangan,
+- aksesibilitas: kontras minimal 4.5:1, focus ring, label programatik, alt text,
+- state UI: loading, kosong, gagal.
+Untuk CLI/bot/library tanpa antarmuka, modul ini DILARANG ada.`;
+}
+
 const CLARIFY_SYSTEM_PROMPT = `
 Kamu adalah Product Manager ramah yang ahli menyederhanakan konsep teknis untuk pengguna awam/pemula (Beginner-Friendly).
 Tugasmu: Menganalisis ide aplikasi dari pengguna dan membuat 4-5 pertanyaan klarifikasi tentang alur kerja produk, skala pemakaian, dan fitur penting yang relevan dengan domain aplikasi tersebut.
@@ -500,7 +516,20 @@ Keluaran HANYA JSON dengan tepat tiga kunci:
   "apiEndpoints": [{ "method": "GET | POST | PATCH | DELETE", "path": "/api/v1/...", "description": "Fungsi + siapa boleh akses + status error", "payload": "{ ... }", "response": "{ ... }" }]
 }
 
-3-6 modul fitur. Tulis "Tidak berlaku (tanpa antarmuka)" untuk DB/API pada CLI, bot statis, atau library yang memang tidak membutuhkannya, dan array tetap kosong. Jangan menulis field lain. Jangan berhenti sebelum JSON ditutup.
+3-6 modul fitur. Tulis "Tidak berlaku (tanpa antarmuka)" untuk DB/API pada CLI, bot statis, atau library yang memang tidak membutuhkannya, dan array tetap kosong.
+
+MODUL DESIGN SYSTEM (WAJIB untuk produk ber-antarmuka):
+Jika produk punya antarmuka (web, desktop, mobile), salah satu modul fitur HARUS bernama "Design System" dan isinya konkret — bukan deskripsi rasa. Modul itu wajib memuat:
+- token warna dengan nilai nyata (minimal 3 nilai HEX/OKLCH: latar, permukaan, aksen),
+- token tipografi (keluarga font, ukuran, berat, line-height),
+- spacing dan radius konkret dalam px/rem,
+- strategi border atau bayangan,
+- bukti aksesibilitas: kontras (minimal 4.5:1), focus ring, label programatik, alt text,
+- state UI penting: loading, kosong, gagal.
+Setiap modul termasuk Design System wajib punya minimal 2 acceptanceCriteria yang menguji alur gagal atau edge case.
+Untuk CLI/bot/library tanpa antarmuka, modul ini DILARANG ada. Jangan menulis nama modul lain di luar daftar yang sudah ditetapkan.
+
+Jangan menulis field lain. Jangan berhenti sebelum JSON ditutup.
 `;
 
 // Tahap 2 dari generate 2-tahap: terima skeleton tahap 1, keluarkan HANYA tasks.
@@ -960,7 +989,11 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     console.log(`[AI-PRD] Tahap 1c/3 fitur, DB & API via ${chosenModel}...`);
     const detail = await callStage(
       'rincian',
-      PRD_DETAIL_SYSTEM_PROMPT,
+      // Modul Design System dituntut validator pada features, jadi syaratnya
+      // harus ada di prompt yang MENULIS features. Sebelumnya kontrak desain
+      // hanya dikirim ke tahap arsitektur, sehingga model tidak pernah tahu
+      // modul itu wajib dan PRD selalu ditolak.
+      PRD_DETAIL_SYSTEM_PROMPT + '\n' + getDesignSystemRequirement(),
       userPrompt + decidedText +
       `\nStack yang ditetapkan (techStack): ${JSON.stringify(core.techStack)}\n` +
       'Susun features, databaseSchema, dan apiEndpoints sekarang.',
@@ -1008,7 +1041,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       let detailFixed = detail;
       if (detailProblems.length) {
         const fixed = await callWithTruncationRetry(
-          PRD_DETAIL_SYSTEM_PROMPT,
+          PRD_DETAIL_SYSTEM_PROMPT + '\n' + getDesignSystemRequirement(),
           userPrompt + decidedText +
           `\nStack yang ditetapkan: ${JSON.stringify(prose.techStack)}\n` +
           `Perbaiki rincian berikut. Jangan mengubah identitas atau arsitektur.\n` +
