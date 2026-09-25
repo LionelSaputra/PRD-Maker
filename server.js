@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { db } from './src/db.js';
 import { generateClarifications, generatePRDFromPrompt, fetchAvailableModels, appendFeatureChange } from './src/ai-prd.js';
+import { buildPreviewHtml } from './src/preview.js';
 
 const PORT = process.env.PORT || 3333;
 const AUTH_CHECK_URL = process.env.AUTH_CHECK_URL || 'http://127.0.0.1:20131/check';
@@ -209,6 +210,22 @@ const server = http.createServer(async (req, res) => {
         .run(body.status, body.reason || null, fullId);
       const updated = db.prepare('SELECT * FROM tasks WHERE id = ?').get(fullId);
       return sendJson(res, 200, updated);
+    }
+
+    // 3.2 GET /api/v1/workspaces/:id/preview  (halaman contoh UI dari modul design system)
+    // Harus DIPERIKSA SEBELUM handler GET workspace umum di bawah, karena handler
+    // itu menangkap semua path yang diawali /api/v1/workspaces/.
+    if (req.method === 'GET' && url.pathname.endsWith('/preview')) {
+      const parts = url.pathname.split('/');
+      const wsId = parts[parts.length - 2];
+      const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(wsId);
+      if (!ws) return sendJson(res, 404, { error: 'Workspace not found' });
+      if (!await requireWorkspaceAuth(req, res, ws)) return;
+      const features = JSON.parse(ws.features_json || '[]');
+      const tasks = db.prepare('SELECT * FROM tasks WHERE workspace_id = ? ORDER BY id ASC').all(wsId);
+      const html = buildPreviewHtml(ws, features, tasks);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(html);
     }
 
     // 3. GET /api/v1/workspaces/:id
@@ -1490,10 +1507,16 @@ function renderHTML() {
         <div style="margin-bottom: 1.25rem;">
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
             <h1 class="view-title" id="ws-name" style="word-break: break-word; font-size: 1.45rem; margin-bottom: 0;">Project Name</h1>
-            <button class="btn-secondary" style="flex-shrink: 0; white-space: nowrap;" onclick="startNewSession()">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-              <span>Project Baru</span>
-            </button>
+            <div style="display: flex; gap: 0.5rem; flex-shrink: 0;">
+              <button class="btn-secondary" id="btn-preview-ui" style="white-space: nowrap;" onclick="openPreview()" title="Lihat contoh tampilan dari modul Design System">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                <span>Lihat Preview UI</span>
+              </button>
+              <button class="btn-secondary" style="white-space: nowrap;" onclick="startNewSession()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                <span>Project Baru</span>
+              </button>
+            </div>
           </div>
           <p id="ws-tagline" style="color: var(--accent); font-style: italic; font-size: 0.85rem; margin-top: 4px;"></p>
           <p id="ws-summary" style="color: var(--text-muted); font-size: 0.875rem; margin-top: 6px; line-height: 1.5;"></p>
@@ -1831,6 +1854,11 @@ function renderHTML() {
 
     function resetStep1() {
       setStep(1);
+    }
+
+    function openPreview() {
+      if (!currentWsId) return alert('Buka salah satu sesi terlebih dahulu.');
+      window.open('/api/v1/workspaces/' + currentWsId + '/preview', '_blank');
     }
 
     function startNewSession() {
