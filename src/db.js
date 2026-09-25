@@ -36,3 +36,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
 );
 `);
+
+// Arah visual yang dipilih user (kosong = AI yang memilih). Ditambahkan
+// terpisah supaya workspace lama tetap bisa dibaca tanpa migrasi data.
+if (!db.prepare('PRAGMA table_info(workspaces)').all().some(c => c.name === 'design_direction')) {
+  db.exec('ALTER TABLE workspaces ADD COLUMN design_direction TEXT');
+}

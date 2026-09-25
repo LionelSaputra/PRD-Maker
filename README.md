@@ -31,7 +31,7 @@ doing.
 - **HTTP layer:** the built-in `http` module — no web framework
 - **Database:** SQLite via `better-sqlite3` (WAL mode)
 - **Frontend:** server-rendered HTML with vanilla JavaScript, no build step
-- **AI provider:** DeepSeek
+- **AI provider:** OpenAI-compatible router, memakai model teks yang tersedia dari `/v1/models`; default server saat ini `oa/space-bunny-free`
 - **API:** REST under `/api/v1`
 
 ## API
@@ -79,7 +79,7 @@ be committed.
 | `PORT` | `3333` | Port the HTTP server listens on |
 | `PRDMAKER_API_KEY` | — | API key for the AI provider |
 | `PRDMAKER_BASE_URL` | `http://127.0.0.1:20127/v1` | Base URL of the OpenAI-compatible AI endpoint |
-| `PRDMAKER_MODEL` | `oa/gemini-3.8-flash-high` | Default model used for generation |
+| `PRDMAKER_MODEL` | — | Default model used for generation; config server saat ini `oa/space-bunny-free` |
 | `PRDMAKER_CONFIG` | `~/.prdmaker/config.yaml` | Path to an optional YAML config file |
 | `DB_PATH` | `./data.db` | SQLite database location |
 

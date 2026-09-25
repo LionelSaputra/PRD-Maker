@@ -224,33 +224,47 @@ export const ANTI_GENERIC_RULES = [
 
 // Ringkasan untuk disuntikkan ke prompt: model memilih SATU template lalu
 // menyalin nilainya, bukan mengarang palet.
+
+// Dipakai dropdown + kartu pratinjau di UI: user boleh memilih arah visual
+// sendiri, atau membiarkan model memilih berdasarkan brief. `light` ikut
+// diekspor supaya kartu bisa menampilkan palet tanpa fetch tambahan.
+export const DESIGN_DIRECTIONS = DESIGN_TEMPLATES.map(({ id, name, for: use, light }) => ({
+  id, name, use,
+  light: ['bg', 'surface', 'border', 'text', 'textMuted', 'accent', 'done'].map(k => light[k])
+}));
+
+export function designDirectionPromptBlock(chosenId) {
+  if (!chosenId) return 'Arah visual: PILIH SENDIRI berdasarkan brief, lalu sebutkan id dan alasannya di modul Design System.';
+  const t = DESIGN_TEMPLATES.find(x => x.id === chosenId);
+  if (!t) return 'Arah visual: PILIH SENDIRI berdasarkan brief, lalu sebutkan id dan alasannya di modul Design System.';
+  const d = t.dark, l = t.light;
+  return `Arah visual WAJIB: ${t.name} (id: ${t.id}) karena ${t.for}. Pengguna sudah memilih arah ini; jangan menggantinya dengan arah lain.
+feels: ${t.feel}
+font: ${t.font}
+spasi: ${t.scale.join('/')} px | radius: ${t.radius} | kedalaman: ${t.depth}
+aksen: ${t.accent}
+gelap: bg ${d.bg}, surface ${d.surface}, border ${d.border}, teks ${d.text}, teks-sekunder ${d.textMuted}, aksen ${d.accent}, status ${d.done}/${d.progress}/${d.failed}
+terang: bg ${l.bg}, surface ${l.surface}, border ${l.border}, teks ${l.text}, teks-sekunder ${l.textMuted}, aksen ${l.accent}, status ${l.done}/${l.progress}/${l.failed}
+pola: ${t.patterns.join('; ')}${t.note ? `\ncatatan: ${t.note}` : ''}
+Tulis modul Design System memakai nilai di atas apa adanya (boleh menyesuaikan satu token bila ada alasan domain yang kuat, dan sebutkan alasannya).`;
+}
 export function designTemplatePromptBlock() {
-  const lines = DESIGN_TEMPLATES.map(t => {
-    const d = t.dark, l = t.light;
-    return [
-      `- "${t.name}" (id: ${t.id}) untuk ${t.for}`,
-      `  feel: ${t.feel}`,
-      `  font: ${t.font}`,
-      `  skala spacing: ${t.scale.join('/')} px | radius: ${t.radius} | kedalaman: ${t.depth}`,
-      `  aksen: ${t.accent}`,
-      `  gelap: bg ${d.bg}, surface ${d.surface}, border ${d.border}, teks ${d.text}, teks-sekunder ${d.textMuted}, aksen ${d.accent}, status ${d.done}/${d.progress}/${d.failed}`,
-      `  terang: bg ${l.bg}, surface ${l.surface}, border ${l.border}, teks ${l.text}, teks-sekunder ${l.textMuted}, aksen ${l.accent}, status ${l.done}/${l.progress}/${l.failed}`
-    ].join('\n');
-  }).join('\n');
-
   return `
-=== TEMPLATE DESIGN SYSTEM (PILIH SATU, JANGAN MENGARANG) ===
-Pilih SATU template yang paling cocok dengan domain aplikasi, lalu SALIN nilai warnanya apa adanya (boleh menyesuaikan satu aksen bila ada alasan kuat dari domain). Sebutkan di deskripsi modul design system template mana yang dipakai dan mengapa.
+=== REFERENSI ARAH VISUAL (TITIK AWAL, BUKAN TEMPLATE WAJIB) ===
+Pilih satu arah yang cocok setelah membaca brief. Sebutkan id, nama, alasan, dan adaptations yang dipakai. Pertahankan branding eksisting. Boleh mengubah token dengan alasan domain, tetapi jangan menggabungkan dua arah tanpa alasan.
 
-${lines}
+Template bukan daftar tampilan generik. Jangan memakai ini tanpa kecocokan domain:
+- precision-density: dashboard/devtools/monitoring.
+- warmth-approachability: kolaborasi/konsumen/onboarding.
+- sophistication-trust: fintech/health/legal/enterprise.
+- boldness-clarity: consumer memusatkan perhatian pada satu aksi.
+- utility-function: admin/internal tools.
+- data-analysis: monitoring/analitik real-time.
+- playful-expressive: kreatif/gamifikasi yang memang playful.
 
-=== ATURAN MOTION (WAJIB) ===
-${MOTION_RULES.map(r => '- ' + r).join('\n')}
+Untuk arah dengan >1 aksen (boldness-clarity, data-analysis, playful-expressive), pilih aksen domain yang relevan sebagai warna utama. Status done/progress/failed tetap semantik dan tidak menjadi dekorasi.
 
-=== TINGKAT KERAJINAN WAJIB (dari skill impeccable, diperiksa) ===
-${IMPECCABLE_RULES.map(r => '- ' + r).join('\n')}
-
-=== ATURAN ANTI-GENERIK (WAJIB, DIPERIKSA) ===
-${ANTI_GENERIC_RULES.map(r => '- ' + r).join('\n')}
+=== MOTION DAN CRAFT FLOOR (WAJIB) ===
+${[...MOTION_RULES, ...IMPECCABLE_RULES, ...ANTI_GENERIC_RULES].map(r => '- ' + r).join('\n')}
 `;
 }
