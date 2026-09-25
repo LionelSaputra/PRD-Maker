@@ -497,7 +497,9 @@ Keluarkan HANYA JSON dengan tepat tiga kunci:
   "summary": "Latar belakang, problem, pengguna, solusi (2-3 paragraf)"
 }
 
-Isi summary dengan: tujuan, pengguna utama, metrik terukur (atau usulan), asumsi, ukuran/skala sebagai kalimat natural ("tiga pengguna", bukan hanya label), dan hal yang sengaja di luar lingkup. Deteksi CLI/bot/API/library tanpa UI dari brief dan nyatakan itu. Jangan mengarang metrik, dependency, atau integrasi luar kebutuhan.
+Isi summary dengan: tujuan, pengguna utama, metrik terukur (atau usulan), asumsi, ukuran/skala sebagai kalimat natural ("tiga pengguna", bukan hanya label), dan hal yang sengaja di luar lingkup.
+WAJIB mengakhiri summary dengan kalimat yang diawali PERSIS frasa "Di luar lingkup:" lalu daftar hal yang sengaja tidak dikerjakan. Contoh: "Di luar lingkup: unggah berkas, pembayaran, dan notifikasi realtime." Ini diperiksa otomatis; tanpa frasa itu PRD ditolak.
+Deteksi CLI/bot/API/library tanpa UI dari brief dan nyatakan itu. Jangan mengarang metrik, dependency, atau integrasi luar kebutuhan.
 
 Jangan menulis field lain. Jangan menulis catatan, rencana, atau markdown. Langsung JSON dan tutup dengan }.
 `;
