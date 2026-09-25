@@ -117,7 +117,11 @@ try {
   mode='invalid-prd'; const rejected=await request('/api/v1/workspaces/generate','POST',{idea:'Invalid'}); assert.equal(rejected.status,422,JSON.stringify(rejected.data)); mode='ok';
   assert.equal((await request('/api/v1/workspaces')).data.workspaces.length,1);
   mode='provider-error'; const failed=await request('/api/v1/workspaces/generate','POST',{idea:'Provider down',model:'oa/gpt-6-astra'}); assert.equal(failed.status,500); assert.ok(!JSON.stringify(failed).includes('SECRET-SHOULD-NOT-LEAK')); mode='ok';
-  assert.ok(seen.every(r=>r.model==='oa/gpt-6-astra'));
+  // Fidelity model sekarang berarti: model yang dipilih dipakai LEBIH DULU, dan
+  // cadangan hanya boleh berasal dari rantai terukur (bukan model acak).
+  assert.equal(seen[0].model,'oa/gpt-6-astra','model terpilih harus dicoba lebih dulu');
+  const chain=new Set(['oa/gpt-6-astra','oa/space-bunny-free','oa/mimo-v2.6-flash','oa/deepseek-v4.1-flash-free']);
+  assert.ok(seen.every(r=>chain.has(r.model)),'hanya model terpilih + rantai cadangan yang boleh dipakai: '+[...new Set(seen.map(r=>r.model))]);
   // Kontrak desain menyatu di system prompt tahap arsitektur, tepat satu kali.
   assert.ok(seen.filter(r => r.messages[0].content.includes('architectureOverview')).every(r => (r.messages[0].content.match(/KONTRAK DESAIN ANTI AI-SLOP/g) || []).length === 1));
   assert.equal((await request(path,'DELETE',undefined,false)).status,401);
