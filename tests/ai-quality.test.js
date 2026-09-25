@@ -405,6 +405,22 @@ try {
     assert.match(calls[3].body.messages[0].content, /tidak boleh mendapat task frontend, login, atau design system/i);
   });
 
+  await test('"bukan CLI, bot, atau API tanpa UI" is contrast, not a non-UI claim', () => {
+    // Regresi nyata: aplikasi web ditolak sebagai produk non-UI hanya karena
+    // kalimatnya menyebut apa yang BUKAN produknya.
+    const web = structuredClone(uiSkeleton);
+    web.summary = 'Ini aplikasi web dengan antarmuka, bukan CLI, bot, atau API tanpa UI. 5 petugas, 500 surat per bulan. Di luar lingkup: unggah berkas.';
+    web.architectureOverview = 'Keputusan teknologi: Node.js dipilih karena ringan; React ditolak sebagai alternatif. HTTPS dan validasi input.';
+    assert.ok(!validatePRD(web, 'skeleton').some(p => /Design System tidak boleh/i.test(p)));
+    assert.ok(!validatePRD(web, 'skeleton').some(p => /tidak ada modul Design System/i.test(p)));
+
+    // Klaim non-UI yang sebenarnya tetap harus terdeteksi.
+    const cli = structuredClone(uiSkeleton);
+    cli.summary = 'CLI tanpa antarmuka untuk 1 pengguna, 100 data per bulan. Di luar lingkup: web.';
+    cli.architectureOverview = 'Keputusan teknologi: Python dipilih; Redis ditolak. Validasi input.';
+    assert.ok(validatePRD(cli, 'skeleton').some(p => /Design System tidak boleh/i.test(p)));
+  });
+
   await test('"tanpa UI" as a label for a special mode does not strip the UI', () => {
     // Regresi nyata: model menulis "Aplikasi web internal (tanpa UI): tabel
     // untuk desktop", maksudnya mode cetak/keadaan khusus, tapi validator
