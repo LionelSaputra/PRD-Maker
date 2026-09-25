@@ -118,6 +118,21 @@ try {
     assert.match(calls[3].body.messages[0].content, /(?:CLI|bot|API|library).*(?:tanpa UI|tanpa antarmuka)/iu);
   });
 
+  await test('normal prose repetition is not mistaken for token corruption', () => {
+    // Regresi nyata: "petugas, petugas" dan "backup 'backup" adalah bahasa
+    // Indonesia biasa, tapi regex lama menandainya rusak sehingga PRD lengkap
+    // (6 modul, Design System ada) ditolak.
+    const prd = { ...structuredClone(uiSkeleton) };
+    prd.summary = uiSkeleton.summary + ' Dicatat oleh petugas, petugas lain memverifikasi.';
+    prd.architectureOverview = uiSkeleton.architectureOverview + " Backup via sqlite3 arsip.db \".backup 'backup/arsip.db'\".";
+    assert.ok(!validatePRD(prd, 'skeleton').some(p => /terputus atau rusak/i.test(p)), JSON.stringify(validatePRD(prd, 'skeleton')));
+    // Korupsi nyata tetap terdeteksi.
+    for (const bad of [' UEUEUEUEUEUEUE', ' yang做 hal sama', ' запuselageUEUEUEUEUEUE']) {
+      const broken = { ...structuredClone(uiSkeleton), summary: uiSkeleton.summary + bad };
+      assert.ok(validatePRD(broken, 'skeleton').some(p => /terputus atau rusak/i.test(p)), JSON.stringify(bad));
+    }
+  });
+
   await test('HTTP status codes and negative phrasing count as failure coverage', () => {
     // Regresi nyata: "Petugas yang mencoba menghapus mendapat 403" dan "Sesi
     // yang sudah logout tidak bisa dipakai ulang" sama-sama menguji alur gagal,
