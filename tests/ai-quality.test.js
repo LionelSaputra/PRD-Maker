@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 const ROOT = resolve(import.meta.dirname, '..');
 
 import {
+  escapeRawControlChars,
   extractJSON,
   fetchAvailableModels,
   generateClarifications,
@@ -115,6 +116,45 @@ try {
     assert.equal((calls[1].body.messages[0].content.match(/KONTRAK DESAIN ANTI AI-SLOP/g) || []).length, 1);
     assert.doesNotMatch(calls[2].body.messages[0].content, /KONTRAK DESAIN ANTI AI-SLOP/);
     assert.match(calls[3].body.messages[0].content, /(?:CLI|bot|API|library).*(?:tanpa UI|tanpa antarmuka)/iu);
+  });
+
+  await test('HTTP status codes and negative phrasing count as failure coverage', () => {
+    // Regresi nyata: "Petugas yang mencoba menghapus mendapat 403" dan "Sesi
+    // yang sudah logout tidak bisa dipakai ulang" sama-sama menguji alur gagal,
+    // tetapi tidak memakai kata yang ada di daftar, sehingga PRD ditolak.
+    const base = () => ({
+      module: 'Contoh', description: 'd', userStories: ['x'],
+      acceptanceCriteria: ['Aksi berhasil.', 'Petugas yang mencoba menghapus mendapat 403.'],
+      edgeCases: []
+    });
+    const prd = { ...structuredClone(uiSkeleton), features: [base()] };
+    assert.ok(!validatePRD(prd, 'skeleton').some(p => /alur gagal/i.test(p)), JSON.stringify(validatePRD(prd, 'skeleton')));
+
+    const negative = base();
+    negative.acceptanceCriteria = ['Aksi berhasil.', 'Sesi yang sudah logout tidak bisa dipakai ulang.'];
+    const prd2 = { ...structuredClone(uiSkeleton), features: [negative] };
+    assert.ok(!validatePRD(prd2, 'skeleton').some(p => /alur gagal/i.test(p)));
+
+    // Fitur yang benar-benar hanya berisi alur bahagia tetap ditolak.
+    const happy = base();
+    happy.acceptanceCriteria = ['Tabel dirender di server.', 'Pagination 50 baris per halaman.'];
+    const prd3 = { ...structuredClone(uiSkeleton), features: [happy] };
+    assert.ok(validatePRD(prd3, 'skeleton').some(p => /alur gagal/i.test(p)));
+  });
+
+  await test('raw control characters inside JSON strings are escaped, not fatal', () => {
+    // Regresi nyata: model menulis newline MENTAH di dalam string JSON,
+    // sehingga seluruh PRD hilang dengan "Bad control character in string
+    // literal" padahal isinya benar.
+    const broken = '{"summary": "Baris satu\n  baris dua dengan\ttab", "techStack": ["a"]}';
+    assert.throws(() => JSON.parse(broken));
+    const fixed = JSON.parse(escapeRawControlChars(broken));
+    assert.equal(fixed.summary, 'Baris satu\n  baris dua dengan\ttab');
+    // Struktur JSON di luar string tidak boleh ikut di-escape.
+    const ok = '{\n  "a": 1,\n  "b": [2, 3]\n}';
+    assert.deepEqual(JSON.parse(escapeRawControlChars(ok)), { a: 1, b: [2, 3] });
+    // extractJSON memakainya untuk keluaran mentah model.
+    assert.equal(JSON.parse(extractJSON('```json\n{"x": "a\nb"}\n```')).x, 'a\nb');
   });
 
   await test('Design System checks accept Indonesian terms for UI states', () => {
