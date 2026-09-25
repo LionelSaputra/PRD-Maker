@@ -38,6 +38,28 @@ function getRouterConfig() {
   };
 }
 
+// Rantai model untuk pembuatan PRD. Terukur pada plan free: hanya 6 dari 41
+// model di /v1/models yang benar-benar bisa dipanggil (sisanya 403
+// model_not_available), dan dari enam itu hanya tiga yang lolos format JSON
+// untuk SELURUH tahap PRD. Urutan ini bukan preferensi, tapi hasil pengukuran
+// `scripts/probe-model.mjs` + `scripts/which-models-work.mjs`.
+// Kalau model yang dipilih pengguna gagal, generate memakai model berikutnya.
+// ponytail: perbarui daftar ini kalau plan berubah; jangan tambah model tanpa
+// menjalankan probe-model.mjs lebih dulu.
+export const PRD_MODEL_CHAIN = Object.freeze([
+  'oa/space-bunny-free',
+  'oa/mimo-v2.6-flash',
+  'oa/deepseek-v4.1-flash-free'
+]);
+
+// Model yang dipilih pengguna dicoba lebih dulu, lalu rantai di atas sebagai
+// cadangan (tanpa duplikat). Pengguna tetap boleh memilih model lain; rantai
+// hanya menyelamatkan generate yang gagal.
+export function prdModelCandidates(chosen) {
+  const list = [chosen, ...PRD_MODEL_CHAIN].filter(Boolean);
+  return [...new Set(list)];
+}
+
 export async function fetchAvailableModels() {
   const cfg = getRouterConfig();
   if (!cfg.apiKey) return cfg.defaultModel ? [cfg.defaultModel] : [];
@@ -834,7 +856,9 @@ Jawaban sebelumnya ditolak karena berisi teks/markdown, bukan JSON. Jangan menul
 
 export async function generatePRDFromPrompt(userIdea, name, clarifications = [], model, designDirection) {
   const routerCfg = getRouterConfig();
-  const chosenModel = selectedModel(routerCfg, model);
+  // Model yang dipakai per panggilan. Bisa berganti saat generate memakai model
+  // cadangan dari PRD_MODEL_CHAIN, jadi disimpan sebagai let, bukan const.
+  let chosenModel = selectedModel(routerCfg, model);
   if (!routerCfg.apiKey) {
     throw new Error('Layanan AI belum dikonfigurasi. Setel API key dan default model lewat konfigurasi aplikasi.');
   }
@@ -949,10 +973,17 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
 
       let prose = { summary: identity.summary, projectName: identity.projectName, tagline: identity.tagline, techStack: core.techStack, architectureOverview: core.architectureOverview };
       if (proseProblems.length) {
+        // Prompt perbaikan harus memuat ATURAN field yang diminta, bukan hanya
+        // masalahnya. Sebelumnya dipakai PRD_IDENTITY_SYSTEM_PROMPT yang tidak
+        // pernah meminta alasan/alternatif arsitektur, sehingga perbaikan tidak
+        // pernah bisa memenuhi syarat dan putaran selalu gagal.
         const fixedProse = await callStage(
           'perbaikan identitas & arsitektur',
-          PRD_IDENTITY_SYSTEM_PROMPT,
-          userPrompt + `\nPerbaiki identitas dan arsitektur produk ini. Tulis ulang summary, techStack, dan architectureOverview sampai bersih (tanpa huruf asing atau kata berulang). Masalah: ${proseProblems.join('; ')}`,
+          PRD_IDENTITY_SYSTEM_PROMPT + '\n' + PRD_CORE_SYSTEM_PROMPT,
+          userPrompt + `\nTulis ulang summary, techStack, dan architectureOverview sampai benar. ` +
+          'architectureOverview WAJIB menyebut alasan pemilihan stack dan minimal satu alternatif yang ditolak ' +
+          '(pakai kata "dipilih"/"memilih" dan "ditolak"/"alternatif"). Ringkas dan bersih, tanpa huruf asing atau kata berulang. ' +
+          `Masalah yang harus dibereskan: ${proseProblems.join('; ')}`,
           ['projectName', 'tagline', 'summary', 'techStack', 'architectureOverview']
         );
         prose = fixedProse;
@@ -1001,17 +1032,36 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     return parsed;
   }
 
-  try {
-    // Satu model dipilih pengguna/default dan dipakai untuk kedua tahap.
-    // Tidak ada fallback diam-diam ke model lain.
-    const skeleton = await generateSkeleton();
-    return await generateTasks(skeleton);
-  } catch (err) {
-    lastRouterError = err.message;
-    if (err.validationProblems) throw err;
-    console.error('[AI-PRD] Gagal generate via router:', err.message);
-    throw new Error(routerErrorMessage(lastRouterError, 'menyusun PRD'));
+  // Coba model yang dipilih pengguna lebih dulu, lalu model cadangan dari
+  // PRD_MODEL_CHAIN kalau gagal. Rantai ini terukur: plan free memblokir 35 dari
+  // 41 model, dan model gratis yang tersisa kadang mengeluarkan teks korup atau
+  // kena 502, sehingga satu percobaan per model terlalu rapuh.
+  const candidates = prdModelCandidates(chosenModel);
+  // Kegagalan dicatat per model. Yang dilaporkan ke pengguna adalah yang paling
+  // informatif (kesalahan bentuk/validasi mengalahkan "koneksi gagal"), karena
+  // model terakhir dalam rantai mungkin cuma kena 502 sesaat.
+  const failures = [];
+  for (let i = 0; i < candidates.length; i++) {
+    chosenModel = candidates[i];
+    if (i > 0) console.log(`[AI-PRD] Mencoba model cadangan ${chosenModel} (${i + 1}/${candidates.length})...`);
+    try {
+      const skeleton = await generateSkeleton();
+      return await generateTasks(skeleton);
+    } catch (err) {
+      lastRouterError = err.message;
+      failures.push(err);
+      console.error(`[AI-PRD] Gagal via ${chosenModel}:`, err.message);
+    }
   }
+  const decisive = failures.find(e => e.validationProblems || /setelah dua percobaan|tidak menghasilkan/i.test(e.message));
+  if (decisive) {
+    console.error('[AI-PRD] Gagal semua model dalam rantai:', decisive.message);
+    // validationError sudah menulis pesan Indonesia yang siap tampil; yang
+    // mentah (kesalahan bentuk model) baru perlu diterjemahkan.
+    if (decisive.validationProblems) throw decisive;
+    throw new Error(routerErrorMessage(decisive.message, 'menyusun PRD'));
+  }
+  throw new Error(routerErrorMessage(lastRouterError, 'menyusun PRD'));
 }
 
 const APPEND_CHANGE_SYSTEM_PROMPT = `
