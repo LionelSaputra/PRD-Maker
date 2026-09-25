@@ -240,9 +240,32 @@ function parseMarkdownTasks(text) {
   return tasks;
 }
 
+// Buang pecahan huruf asing (CJK/Cyrillic/Arab) yang menyelip di kalimat
+// Indonesia. Spasi dirapikan supaya kalimat tetap enak dibaca.
+export function stripForeignFragments(text) {
+  return String(text)
+    .replace(/[\u0400-\u04FF\u0600-\u06FF\u3040-\u30FF\u4E00-\u9FFF]+/g, '')
+    // Tanda baca yang tertinggal setelah pecahan dibuang double.
+    .replace(/[ \t]{2,}/g, ' ')
+    // "surat,/kategori" -> pecahan dibuang menyisakan koma menggantung.
+    .replace(/,\s*\/\s*/g, ', ')
+    .replace(/\s+([,.;:)])/g, '$1')
+    .replace(/\(\s+/g, '(')
+    .replace(/\s+\)/g, ')')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export function normalizePRDFields(prd) {
   if (!prd || typeof prd !== 'object') return prd;
   const out = { ...prd };
+  // Model gratis kadang menyelipkan pecahan huruf asing di tengah kalimat
+  // ("(jenis surat,死的/kategori, tujuan)"). Itu cacat token, bukan cacat isi,
+  // jadi dibersihkan di tempat — jauh lebih baik daripada membuang PRD utuh
+  // yang isinya sudah benar hanya karena dua kata bocor.
+  // ponytail: hanya buang pecahan yang tidak menempel pada kata Indonesia.
+  if (typeof out.summary === 'string') out.summary = stripForeignFragments(out.summary);
+  if (typeof out.architectureOverview === 'string') out.architectureOverview = stripForeignFragments(out.architectureOverview);
   // Model kadang mengganti nama kunci (name/title alih-alih module, id task
   // alih-alih spec). Bentuknya ekuivalen, jadi diterima — tapi nilainya tetap
   // harus lolos validator. Terukur: 8 fitur ditolak hanya karena memakai
