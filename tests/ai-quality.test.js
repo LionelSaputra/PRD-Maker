@@ -115,6 +115,29 @@ try {
     assert.match(calls[3].body.messages[0].content, /(?:CLI|bot|API|library).*(?:tanpa UI|tanpa antarmuka)/iu);
   });
 
+  await test('a worse repair keeps the first detail, and the PRD still lands', async () => {
+    process.env.PRDMAKER_API_KEY = 'offline-test-key';
+    process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
+    process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
+    process.env.PRDMAKER_CONFIG = '/does/not/exist';
+    // Percobaan pertama gagal hanya pada bagian PROSA (ringkasan tanpa batas
+    // lingkup); rincian pertama sudah benar. Perbaikan prosa menjawab, sedangkan
+    // rincian TIDAK boleh ikut diulang atau ditimpa.
+    const weakSummary = { ...identityOf(uiSkeleton), summary: 'Terlalu pendek.' };
+    const calls = mockQueue([
+      weakSummary, coreOf(uiSkeleton), detailOf(uiSkeleton),
+      // Perbaikan prosa mengembalikan identitas yang benar + core.
+      { ...identityOf(uiSkeleton), ...coreOf(uiSkeleton) },
+      { tasks: uiTasks }
+    ]);
+    const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
+    // Rincian asli dipertahankan: nama modul utuh dan jumlah fitur tidak berubah.
+    assert.deepEqual(result.features.map(f => f.module), uiSkeleton.features.map(f => f.module));
+    assert.equal(result.tasks.length, uiTasks.length);
+    // Tidak ada panggilan "Perbaiki rincian" karena rinciannya memang sudah benar.
+    assert.ok(!calls.some(c => /Perbaiki rincian/i.test(c.body.messages[1].content)));
+  });
+
   await test('a failing chosen model falls back to the measured chain, and the PRD still lands', async () => {
     process.env.PRDMAKER_API_KEY = 'offline-test-key';
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
