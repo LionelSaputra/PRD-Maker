@@ -55,7 +55,14 @@ export const PRD_MODEL_CHAIN = Object.freeze([
 // Model yang dipilih pengguna dicoba lebih dulu, lalu rantai di atas sebagai
 // cadangan (tanpa duplikat). Pengguna tetap boleh memilih model lain; rantai
 // hanya menyelamatkan generate yang gagal.
-export function prdModelCandidates(chosen) {
+// Model yang DIPILIH pengguna dipakai apa adanya (pinned), tanpa rantai
+// cadangan. Alasannya terukur: tiap model cadangan membakar ladder retry
+// 502-nya sendiri, sehingga fallback justru memperpanjang kegagalan, dan
+// pengguna yang memilih model tertentu menghendaki model itu, bukan digantikan.
+// Hanya "Default konfigurasi server" (model kosong) yang tetap memakai rantai
+// penyelamat PRD_MODEL_CHAIN, karena di situ tidak ada preferensi eksplisit.
+export function prdModelCandidates(chosen, userChosen) {
+  if (userChosen) return [chosen];
   const list = [chosen, ...PRD_MODEL_CHAIN].filter(Boolean);
   return [...new Set(list)];
 }
@@ -1335,11 +1342,10 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     return parsed;
   }
 
-  // Coba model yang dipilih pengguna lebih dulu, lalu model cadangan dari
-  // PRD_MODEL_CHAIN kalau gagal. Rantai ini terukur: plan free memblokir 35 dari
-  // 41 model, dan model gratis yang tersisa kadang mengeluarkan teks korup atau
-  // kena 502, sehingga satu percobaan per model terlalu rapuh.
-  const candidates = prdModelCandidates(chosenModel);
+  // Model pilihan pengguna dipakai apa adanya (pinned). Hanya "Default
+  // konfigurasi server" (model kosong) yang menambahkan rantai cadangan
+  // PRD_MODEL_CHAIN, karena tidak ada preferensi eksplisit yang harus dihormati.
+  const candidates = prdModelCandidates(chosenModel, model);
   // Kegagalan dicatat per model. Yang dilaporkan ke pengguna adalah yang paling
   // informatif (kesalahan bentuk/validasi mengalahkan "koneksi gagal"), karena
   // model terakhir dalam rantai mungkin cuma kena 502 sesaat.

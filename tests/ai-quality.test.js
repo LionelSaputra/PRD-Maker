@@ -377,7 +377,7 @@ try {
       if (body.model === 'oa/gpt-6-astra') return completion({ tasks: [] });
       return completion({ tasks: uiTasks });
     };
-    const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
+    const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], '');
     assert.equal(result.tasks.length, uiTasks.length);
     // Tahap 1 hanya ditulis sekali (4 panggilan) meski dua model dipakai.
     const stageOneCalls = calls.filter(c => /"projectName"|"features"|databaseSchema/.test(c.messages[0].content));
@@ -392,7 +392,27 @@ try {
     assert.ok(stageOneCalls.every(c => c.model === 'oa/gpt-6-astra'), 'tahap 1 tidak boleh diulang model cadangan');
   });
 
-  await test('a failing chosen model falls back to the measured chain, and the PRD still lands', async () => {
+  await test('an explicitly chosen model is pinned: no fallback chain', async () => {
+    process.env.PRDMAKER_API_KEY = 'offline-test-key';
+    process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
+    process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
+    process.env.PRDMAKER_CONFIG = '/does/not/exist';
+    // Pengguna memilih luna; ruang lingkup permintaan: HANYA luna yang dipakai.
+    // Gagal pun tidak boleh diam-diam pindah ke space-bunny/mimo/deepseek.
+    const tried = [];
+    globalThis.fetch = async (url, options = {}) => {
+      if (url.endsWith('/models')) return new Response(JSON.stringify({ data: [{ id: 'oa/gpt-6-luna' }] }), { status: 200 });
+      tried.push(JSON.parse(options.body).model);
+      return new Response(JSON.stringify({ error: 'down' }), { status: 500 });
+    };
+    await assert.rejects(
+      () => generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-luna'),
+      /layanan AI/i
+    );
+    assert.deepEqual([...new Set(tried)], ['oa/gpt-6-luna'], 'model lain tidak boleh dicoba saat pengguna memilih model: ' + tried.join(','));
+  });
+
+  await test('Default model (no explicit pick) falls back to the measured chain, and the PRD still lands', async () => {
     process.env.PRDMAKER_API_KEY = 'offline-test-key';
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
     process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
@@ -411,12 +431,12 @@ try {
       if (prompt.includes('"projectName"')) return completion(identityOf(uiSkeleton));
       return completion({ tasks: uiTasks });
     };
-    const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
+    const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], '');
     assert.equal(result.tasks.length, uiTasks.length);
     assert.ok(result.features.length > 0);
   });
 
-  await test('when every model in the chain fails, the user gets a friendly message, not raw provider text', async () => {
+  await test('Default model: when every model in the chain fails, the user gets a friendly message, not raw provider text', async () => {
     process.env.PRDMAKER_API_KEY = 'offline-test-key';
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
     process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
@@ -428,7 +448,7 @@ try {
       return new Response(JSON.stringify({ error: { code: 'provider_request_failed', message: 'SECRET-UPSTREAM-DETAIL' } }), { status: 503 });
     };
     await assert.rejects(
-      () => generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra'),
+      () => generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], ''),
       (err) => {
         assert.ok(!/SECRET-UPSTREAM-DETAIL/.test(err.message), 'detail penyedia tidak boleh bocor: ' + err.message);
         assert.match(err.message, /layanan AI/i);
