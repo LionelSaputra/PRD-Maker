@@ -338,12 +338,18 @@ export function normalizePRDFields(prd) {
     });
   }
   if (Array.isArray(out.tasks)) {
-    out.tasks = out.tasks.map((t) => {
+    out.tasks = out.tasks.map((t, i) => {
       if (!t || typeof t !== 'object') return t;
       const module = t.module || t.name || t.modul;
       const next = module && !t.module ? { ...t, module } : { ...t };
       // Task butuh field "spec"; model kadang memakai "description".
       if (!String(next.spec || '').trim() && typeof next.description === 'string') next.spec = next.description;
+      // ID kanonik TASK-01. Model kadang menulis "T-1", "T1", atau angka saja;
+      // bentuknya ekuivalen, dan validator menuntut pola TASK-\d{2,}.
+      const raw = String(next.id || '').trim();
+      const digits = raw.match(/(\d+)\s*$/)?.[1];
+      if (digits) next.id = `TASK-${digits.padStart(2, '0')}`;
+      else if (!raw) next.id = `TASK-${String(i + 1).padStart(2, '0')}`;
       return next;
     });
   }
@@ -656,7 +662,15 @@ ATURAN:
 2. SATU TASK = SATU PEKERJAAN TERBUKTI. Task boleh digabung bila terkait kuat, tetapi setiap task harus punya file path konkret, logic + error handling, dan bukti. Jangan memakai task generik seperti "buat backend" atau "testing".
 3. UKURAN SESUAI SKALA. Jangan memaksa 8-15 task: gunakan jumlah secukupnya. Project kecil boleh 3-5 task; project besar dipecah per endpoint, layar, integrasi, atau lapisan. Tetap sertakan pondasi, tiap coverage wajib, E2E alur utama, dan production readiness bila relevan.
 4. module tiap task WAJIB nama modul dari features. Tabel dan endpoint harus muncul persis dalam spec task penanggung jawab.
-5. spec WAJIB memuat: Tujuan; File; Dependensi: TASK-xx atau "tidak ada"; Implementasi; Error/edge case; Kriteria selesai; Verifikasi. Tulis "Dependensi:" eksplisit karena machine-readable server hanya menyimpan spec. ID unik TASK-01 dst dan dependensi hanya ke task sebelumnya.
+5. spec WAJIB memakai TEMPLATE berikut PERSIS (label dalam huruf tebal, urutan sama). Salin tujuh baris ini; jangan meringkas atau menghilangkan label:
+   Tujuan: <apa yang dicapai>
+   File: <path konkret, mis. src/db.js>
+   Dependensi: <TASK-xx atau "tidak ada">
+   Implementasi: <langkah logis>
+   Error/edge case: <penanganan gagal>
+   Kriteria selesai: <cara tahu sudah selesai>
+   Verifikasi: <perintah atau langkah uji>
+   ID unik TASK-01, TASK-02, dst (huruf besar, dua digit). Dependensi hanya boleh menunjuk task sebelumnya.
 6. Salin keputusan keamanan, a11y, desain, dan out-of-scope dari kerangka ke langkah kerja serta bukti. Untuk UI buktikan keyboard/focus/reader, kontras, failure/empty state, responsif, dan reduced-motion. Jangan menambah motion, dependency, atau fitur yang tidak diperlukan.
 
 Keluarkan HANYA JSON murni tanpa markdown:
