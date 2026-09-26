@@ -24,21 +24,23 @@ const ai = createServer(async (req,res) => {
   const body = JSON.parse(raw); calls++; seen.push(body);
   if (mode === 'provider-error') { res.writeHead(403); return res.end(JSON.stringify({error:'SECRET-SHOULD-NOT-LEAK model_not_available'})); }
   const prompt = body.messages[0].content;
-  // Tahap 1 dipecah tiga panggilan: identitas, stack+arsitektur, fitur+DB+API.
+  // Tahap 1 dipecah empat panggilan: identitas, stack+arsitektur, fitur, skema+API.
   const identity = { projectName: skeleton.projectName, tagline: skeleton.tagline, summary: skeleton.summary };
   const core = { techStack: skeleton.techStack, architectureOverview: skeleton.architectureOverview };
-  const detail = { features: skeleton.features, databaseSchema: skeleton.databaseSchema, apiEndpoints: skeleton.apiEndpoints };
-  // Urutan penting: prompt inti teknis juga menyebut "Lead Engineer", jadi
-  // pencocokan jumlah kunci harus mendahului cabang lain.
+  const featuresOnly = { features: skeleton.features };
+  const schemaOnly = { databaseSchema: skeleton.databaseSchema, apiEndpoints: skeleton.apiEndpoints };
+  // Urutan penting: prompt skema juga menyebut "tepat dua kunci", jadi
+  // databaseSchema harus dicocokkan lebih dulu daripada cabang core.
   let data;
   if (prompt.includes('Product Manager ramah')) data = clarification;
   else if (prompt.includes('Head of Product & Lead Architect')) data = change;
+  else if (prompt.includes('databaseSchema')) data = schemaOnly;
+  else if (prompt.includes('"features"')) data = featuresOnly;
   else if (prompt.includes('tepat dua kunci')) data = core;
-  else if (prompt.includes('"features"')) data = detail;
   else if (prompt.includes('"projectName"')) data = identity;
   else data = {tasks};
   // Mode invalid-prd membuat validator tahap 2 yang menolak, bukan bentuk tahap 1.
-  const isStageOne = /tepat dua kunci|"features"|"projectName"/.test(prompt);
+  const isStageOne = /databaseSchema|"features"|tepat dua kunci|"projectName"/.test(prompt);
   if (mode === 'invalid-prd' && !isStageOne) data = {tasks:[]};
   if (mode === 'invalid-clarify') data = {questions:[null]};
   res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(data)}}]}));
