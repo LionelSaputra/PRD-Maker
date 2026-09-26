@@ -187,6 +187,27 @@ function routerErrorMessage(raw, action) {
   return `Gagal ${action}: layanan AI mengembalikan jawaban yang tidak valid. Coba lagi, atau ganti model di pemilih model.`;
 }
 
+// Ambil objek JSON pertama yang kurung kurawalnya berimbang, dengan sadar
+// string supaya "}" di dalam teks tidak dihitung sebagai penutup.
+export function firstBalancedObject(text, start) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\') { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return text.substring(start, i + 1);
+    }
+  }
+  return null;
+}
+
 // Escape karakter kontrol mentah (newline, tab, CR) yang muncul DI DALAM
 // string JSON. Di luar string karakter itu memang format, jadi harus
 // dibiarkan agar struktur JSON tetap sah.
@@ -214,6 +235,13 @@ export function extractJSON(raw) {
   str = str.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 
   const firstOpen = str.indexOf('{');
+  if (firstOpen !== -1) {
+    // Ambil objek BERIMBANG pertama, bukan dari "{" pertama sampai "}"
+    // terakhir. Model kadang mengeluarkan dua objek JSON berurutan, dan
+    // potongan first..last justru menyeberangi keduanya lalu gagal parse.
+    const balanced = firstBalancedObject(str, firstOpen);
+    if (balanced) return escapeRawControlChars(balanced);
+  }
   const lastClose = str.lastIndexOf('}');
   if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
     const slice = str.substring(firstOpen, lastClose + 1);

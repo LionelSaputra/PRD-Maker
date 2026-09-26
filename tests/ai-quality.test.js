@@ -118,6 +118,22 @@ try {
     assert.match(calls[3].body.messages[0].content, /(?:CLI|bot|API|library).*(?:tanpa UI|tanpa antarmuka)/iu);
   });
 
+  await test('extractJSON takes the first balanced object, not first-brace-to-last', () => {
+    // Regresi nyata: model mengeluarkan dua objek JSON berurutan, dan potongan
+    // "{" pertama sampai "}" terakhir menyeberangi keduanya lalu gagal parse.
+    const two = '{"table": "users", "fields": ["a"]}\n{"table": "surat", "fields": ["b"]}';
+    assert.deepEqual(JSON.parse(extractJSON(two)), { table: 'users', fields: ['a'] });
+    // "}" di dalam string tidak boleh dihitung sebagai penutup objek.
+    const braces = '{"summary": "pakai } sebagai penutup", "n": 1}';
+    assert.equal(JSON.parse(extractJSON(braces)).n, 1);
+    // &#123; bersarang tetap diambil utuh.
+    const nested = 'teks pembuka {"a": {"b": [1, 2]}, "c": "x"} teks penutup';
+    assert.deepEqual(JSON.parse(extractJSON(nested)), { a: { b: [1, 2] }, c: 'x' });
+    // Kutip yang di-escape tidak membalik status string.
+    const quoted = '{"a": "kata \\"kutip\\" di sini", "b": 2}';
+    assert.equal(JSON.parse(extractJSON(quoted)).b, 2);
+  });
+
   await test('normal prose repetition is not mistaken for token corruption', () => {
     // Regresi nyata: "petugas, petugas" dan "backup 'backup" adalah bahasa
     // Indonesia biasa, tapi regex lama menandainya rusak sehingga PRD lengkap
