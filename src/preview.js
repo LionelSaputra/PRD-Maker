@@ -9,6 +9,7 @@
 // Sengaja tanpa dependensi: satu fungsi, keluaran HTML mandiri.
 
 import { DESIGN_TEMPLATES, DESIGN_DIRECTIONS } from './design-templates.js';
+import { buildModuleScreen, screenKind, productKind } from './preview-screens.js';
 
 const HEX_RE = /#([0-9a-fA-F]{6})\b/g;
 
@@ -141,6 +142,8 @@ export function directionHexes(directionId) {
 }
 
 export function buildPreviewHtml(ws, features, tasks, options = {}) {
+  const databaseSchema = options.databaseSchema || [];
+  const apiEndpoints = options.apiEndpoints || [];
   const ds = (features || []).find(f => f && f.module && /design system|desain antarmuka|sistem desain|design token/i.test(f.module));
   const dsText = ds ? [ds.description, ...(ds.acceptanceCriteria || [])].join('\n') : '';
   const direction = DESIGN_TEMPLATES.find(x => x.id === options.direction);
@@ -152,7 +155,22 @@ export function buildPreviewHtml(ws, features, tasks, options = {}) {
   // Teks di atas tombol beraksen: hitam atau putih, pilih yang terbaca.
   const onAccent = r => (contrastRatio('#ffffff', r.accent) >= contrastRatio('#000000', r.accent) ? '#ffffff' : '#000000');
   const title = ws.name || 'Preview';
-  const modules = (features || []).map((f, i) => ({ n: String(i + 1).padStart(2, '0'), module: f.module, desc: f.description }));
+  const modules = (features || []).map((f, i) => ({
+    n: String(i + 1).padStart(2, '0'),
+    module: f.module,
+    desc: f.description,
+    slug: String(f.module || 'modul').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || ('modul-' + i),
+    acceptanceCriteria: f.acceptanceCriteria || [],
+    edgeCases: f.edgeCases || []
+  }));
+  const kind = productKind({ features, summary: ws.summary || '', architecture: ws.architecture || '' });
+  // Layar contoh per modul: bentuk dipilih dari domain modul + kolom tabel PRD.
+  const screens = modules
+    .map(m => buildModuleScreen(m, { databaseSchema, apiEndpoints, theme: D, onAccent: onAccent(D) }))
+    .join('\n');
+  // Untuk portofolio/landing, modul disusun sebagai bagian halaman berurutan
+  // (bukan kumpulan kartu aplikasi), sesuai aturan design-taste-frontend.
+  const showcase = kind === 'showcase';
   const taskList = (tasks || []).slice(0, 8);
 
   const ver = (a, b) => contrastRatio(a, b).toFixed(1);
@@ -175,8 +193,8 @@ export function buildPreviewHtml(ws, features, tasks, options = {}) {
       </div>
 
       <div class="row">
-        <button class="btn-primary" style="background:${r.accent};color:${onAccent(r)}">Tombol Utama</button>
-        <button class="btn-ghost" style="color:${r.text};border-color:${r.border}">Tombol Sekunder</button>
+        <button class="btn-primary" style="background:${r.accent};color:${onAccent(r)}">${esc((features[0] && features[0].module) ? 'Tambah ' + features[0].module.split(' ')[0] : 'Aksi utama')}</button>
+        <button class="btn-ghost" style="color:${r.text};border-color:${r.border}">Batal</button>
         <button class="btn-ghost" disabled style="color:${r.muted};border-color:${r.border}">Nonaktif</button>
       </div>
 
@@ -274,6 +292,80 @@ export function buildPreviewHtml(ws, features, tasks, options = {}) {
   .note{background:#fffbe9;border:1px solid #f0e0b0;color:#6b5a1a;font-size:.82rem;
         padding:10px 14px;border-radius:6px;margin:18px 0 26px}
   .panel{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px;margin-bottom:24px}
+  .vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+  .app-window{border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-bottom:18px;background:var(--card)}
+  .win-bar{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--page);border-bottom:1px solid var(--line)}
+  .win-dots{display:flex;gap:4px}
+  .win-dots i{width:9px;height:9px;border-radius:50%;background:var(--line);display:block}
+  .win-name{font-size:.8rem;font-weight:650}
+  .win-kind{margin-left:auto;font-family:var(--font-mono);font-size:.68rem;color:var(--ink2)}
+  .win-body{padding:18px}
+  .page-head-sm{display:flex;justify-content:space-between;gap:12px;margin-bottom:14px}
+  .page-head-sm h3{font-size:1.02rem;font-weight:700;letter-spacing:-.01em;margin-bottom:2px}
+  .page-head-sm p{color:var(--ink2);font-size:.82rem;max-width:68ch}
+  .screen-bar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
+  .screen-bar .search{flex:1;min-width:220px}
+  .screen-bar input{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:7px;font:inherit;font-size:.84rem;background:var(--card);color:var(--ink)}
+  .tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px}
+  .tbl{width:100%;border-collapse:collapse;font-size:.82rem}
+  .tbl th{text-align:left;font-weight:650;color:var(--ink2);background:var(--page);padding:9px 11px;white-space:nowrap}
+  .tbl td{padding:10px 11px;border-top:1px solid var(--line)}
+  .tbl td.strong{font-weight:600}
+  .pill{display:inline-block;font-size:.72rem;font-weight:600;padding:2px 8px;border-radius:999px;border:1px solid}
+  .pill.ok{color:#047857;border-color:#04785744;background:#04785712}
+  .pill.warn{color:#9a5b06;border-color:#9a5b0644;background:#9a5b0612}
+  .pill.bad{color:#b3261e;border-color:#b3261e44;background:#b3261e12}
+  .pill.neutral{color:var(--ink2);border-color:var(--line);background:var(--page)}
+  .pill::after{content:'';}
+  .btn-primary,.btn-ghost{cursor:pointer}
+  .entry-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+  .field{display:flex;flex-direction:column;gap:5px;font-size:.78rem}
+  .field span{color:var(--ink2);font-weight:600}
+  .field input,.field select{padding:9px 11px;border:1px solid var(--line);border-radius:7px;font:inherit;font-size:.84rem;background:var(--card);color:var(--ink)}
+  .field.sm{max-width:180px}
+  .entry-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px}
+  .tally{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-top:16px}
+  .tally-item{display:flex;align-items:baseline;gap:8px;padding:11px;border:1px solid var(--line);border-radius:8px}
+  .tally-item b{font-size:1.25rem;font-variant-numeric:tabular-nums;margin-left:auto}
+  .filters{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px}
+  .kpi{padding:13px;border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column;gap:3px}
+  .kpi b{font-size:1.4rem;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  .auth{max-width:340px;display:flex;flex-direction:column;gap:11px}
+  .auth .btn-primary{width:100%}
+  .err{color:#b3261e;font-size:.78rem;border-left:2px solid #b3261e;padding-left:9px}
+  .hint{color:var(--ink2);font-size:.76rem;line-height:1.5}
+  .hint code{font-family:var(--font-mono);font-size:.72rem;background:var(--page);padding:1px 5px;border-radius:4px}
+  .tokens .sw-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px}
+  .sw{display:flex;flex-direction:column;gap:4px;font-size:.74rem}
+  .sw .chip{height:38px;border-radius:7px;border:1px solid var(--line)}
+  .sw code{font-family:var(--font-mono);font-size:.68rem;color:var(--ink2)}
+  .type-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:16px;padding-top:14px;border-top:1px solid var(--line)}
+  .t-h1{font-size:1.35rem;font-weight:700;letter-spacing:-.02em}
+  .t-body{font-size:.86rem;max-width:60ch}
+  .t-num{font-size:2rem;font-weight:700;font-variant-numeric:tabular-nums}
+  .crit{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+  .crit summary{cursor:pointer;font-size:.8rem;font-weight:600}
+  .crit ul{margin:9px 0 0 18px;font-size:.78rem;color:var(--ink2);display:flex;flex-direction:column;gap:4px}
+  .crit li.edge{color:#9a5b06}
+  .content{display:flex;flex-direction:column;gap:14px}
+  .lead{font-size:.88rem;color:var(--ink2);max-width:68ch;line-height:1.6}
+  .hero-blk{display:flex;flex-direction:column;gap:12px;padding:6px 0}
+  .eyebrow{font-family:var(--font-mono);font-size:.72rem;color:var(--ink2);letter-spacing:.04em;text-transform:uppercase}
+  .hero-title{font-size:1.55rem;font-weight:700;letter-spacing:-.025em;line-height:1.2;max-width:24ch}
+  .timeline{list-style:none;display:flex;flex-direction:column;gap:0;margin:0;padding:0}
+  .timeline li{padding:14px 0 14px 16px;border-left:2px solid var(--line);position:relative;display:flex;flex-direction:column;gap:3px}
+  .timeline li::before{content:'';position:absolute;left:-5px;top:19px;width:8px;height:8px;border-radius:50%;background:var(--line)}
+  .timeline li:first-child::before{background:var(--ink2)}
+  .timeline .when{font-family:var(--font-mono);font-size:.72rem;color:var(--ink2)}
+  .timeline b{font-size:.88rem}
+  .timeline p{font-size:.82rem;color:var(--ink2);max-width:70ch}
+  .checklist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px;font-size:.84rem}
+  .checklist li{display:flex;gap:9px;align-items:baseline}
+  .chk{width:17px;height:17px;flex:0 0 17px;border-radius:5px;border:1px solid var(--line);display:inline-flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700}
+  .chk.ok{color:#047857;border-color:#04785788}
+  a.btn-primary,a.btn-ghost{text-decoration:none;display:inline-flex;align-items:center}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
   .panel-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:14px;flex-wrap:wrap}
   .panel-head h3{font-size:.95rem;font-weight:650}
   .verdict{font-family:var(--font-mono);font-size:.74rem;color:var(--ink2)}
@@ -341,6 +433,14 @@ export function buildPreviewHtml(ws, features, tasks, options = {}) {
   ${panel(D, 'dark')}
 
   ${options.compare ? compareSection(options.compareId) : ''}
+
+  <section class="panel">
+    <div class="panel-head"><h3>${showcase ? 'Susunan halaman contoh' : 'Layar contoh per modul'}</h3><span class="verdict">${modules.length} ${showcase ? 'bagian' : 'layar'}, data contoh dari skema PRD</span></div>
+    <p class="verdict" style="margin:0 0 14px">${showcase
+      ? 'Bagian halaman disusun berurutan seperti situs jadi: pembuka, bukti, lalu kontak. Isi diambil dari modul dan data PRD, bukan teks contoh generik.'
+      : 'Bentuk tiap layar dipilih dari domain modulnya (daftar, entri, laporan, pencarian, akun, atau token), dan kolomnya diambil dari tabel di PRD.'} Ini contoh tampilan, bukan aplikasi jadi.</p>
+    ${screens}
+  </section>
 
   <section class="panel">
     <div class="panel-head"><h3>Modul dalam PRD</h3><span class="verdict">${modules.length} modul</span></div>

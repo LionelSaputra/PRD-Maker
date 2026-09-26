@@ -361,12 +361,15 @@ const server = http.createServer(async (req, res) => {
       if (!await requireWorkspaceAuth(req, res, ws)) return;
       const features = JSON.parse(ws.features_json || '[]');
       const tasks = db.prepare('SELECT * FROM tasks WHERE workspace_id = ? ORDER BY id ASC').all(wsId);
+      // Skema & endpoint dipakai preview untuk merender kolom layar yang nyata.
+      const databaseSchema = JSON.parse(ws.db_schema_json || '[]');
+      const apiEndpoints = JSON.parse(ws.api_endpoints_json || '[]');
       // ?direction=<id> hanya untuk membandingkan arah visual sebelum PRD ada.
       // ?compare=1 menampilkan grid semua arah beserta tombol memilih.
       const wanted = url.searchParams.get('direction') || '';
       const compare = url.searchParams.get('compare') === '1';
       const shown = DESIGN_DIRECTIONS.some(d => d.id === wanted) ? wanted : (ws.design_direction || null);
-      const html = buildPreviewHtml(ws, features, tasks, { direction: shown, compare, compareId: ws.design_direction || null });
+      const html = buildPreviewHtml(ws, features, tasks, { direction: shown, compare, compareId: ws.design_direction || null, databaseSchema, apiEndpoints });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(html);
     }
