@@ -1,4 +1,12 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+
+// Cache tahap persisten (resume antar-run) harus diarahkan ke temp saat test,
+// dan dikosongkan sebelum tiap test agar antar-test tidak saling mewarisi.
+const STAGE_CACHE_DIR = mkdtempSync(tmpdir() + '/prd-stage-cache-');
+process.env.PRDMAKER_STAGE_CACHE_DIR = STAGE_CACHE_DIR;
+
 import fs from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -409,6 +417,51 @@ try {
     // dipengaruhi isi /models), dan tahap 1 tidak boleh diulang model cadangan.
     assert.deepEqual([...new Set(taskCalls.map(c => c.model))], ['oa/gpt-6-astra', 'oa/space-bunny-free']);
     assert.ok(stageOneCalls.every(c => c.model === 'oa/gpt-6-astra'), 'tahap 1 tidak boleh diulang model cadangan');
+  });
+
+  await test('a dead run resumes from disk cache: completed stages are not re-requested', async () => {
+    process.env.PRDMAKER_API_KEY = 'offline-test-key';
+    process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
+    process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
+    process.env.PRDMAKER_CONFIG = '/does/not/exist';
+    // Run 1: identitas+stack sukses, lalu fitur kena 502 permanen (5x).
+    let mode = 'kill-after-core';
+    const calls = [];
+    const fetcher = async (url, options = {}) => {
+      if (url.endsWith('/models')) return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      const body = JSON.parse(options.body);
+      calls.push(body);
+      const prompt = body.messages[0].content;
+      if (mode === 'kill-after-core' && prompt.includes('"features"')) {
+        return new Response(JSON.stringify({ error: 'down' }), { status: 502 });
+      }
+      if (prompt.includes('apiEndpoints')) return completion(apiOf(uiSkeleton));
+      if (prompt.includes('databaseSchema')) return completion(dbOf(uiSkeleton));
+      if (prompt.includes('"features"')) return completion(featuresOf(uiSkeleton));
+      if (prompt.includes('architectureOverview')) return completion(coreOf(uiSkeleton));
+      if (prompt.includes('dari kerangka PRD')) return completion({ tasks: uiTasks });
+      return completion(identityOf(uiSkeleton));
+    };
+    globalThis.fetch = fetcher;
+    await assert.rejects(() => generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra'), /layanan AI/i);
+
+    // Run 2: router pulih. Identitas+stack HARUS dimuat dari cache disk,
+    // tidak dipanggil ulang.
+    mode = 'healthy';
+    calls.length = 0;
+    const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
+    assert.equal(result.tasks.length, uiTasks.length);
+    const prompts = calls.map(c => c.messages[0].content);
+    assert.ok(!prompts.some(p => p.includes('Tulis identitas produk')), 'identitas tidak boleh dipanggil ulang');
+    assert.ok(!prompts.some(p => p.includes('architectureOverview') && p.includes('tepat dua kunci')), 'stack tidak boleh dipanggil ulang');
+    assert.ok(prompts.some(p => p.includes('"features"')), 'fitur yang gagal harus dipanggil');
+
+    // Run 3: setelah hasil lengkap tersimpan di cache, generate yang sama
+    // tidak memanggil router sama sekali.
+    calls.length = 0;
+    const result3 = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
+    assert.equal(result3.tasks.length, uiTasks.length);
+    assert.equal(calls.length, 0, 'PRD lengkap dari cache tidak boleh memanggil router');
   });
 
   await test('an explicitly chosen model is pinned: no fallback chain', async () => {
@@ -953,6 +1006,7 @@ try {
 }
 
 async function test(name, fn) {
+  rmSync(STAGE_CACHE_DIR, { recursive: true, force: true });
   await fn();
   console.log(`ok - ${name}`);
 }
