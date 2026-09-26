@@ -118,6 +118,19 @@ try {
     assert.match(calls[3].body.messages[0].content, /(?:CLI|bot|API|library).*(?:tanpa UI|tanpa antarmuka)/iu);
   });
 
+  await test('task IDs written as T-1 or bare digits are normalised to TASK-01', () => {
+    // Regresi nyata: model menulis ID "T-01".."T-12", dan validator menolak
+    // semuanya dengan "ID task T-10 tidak valid atau duplikat".
+    const norm = (ids) => normalizePRDFields({
+      tasks: ids.map(id => ({ id, title: 'x', module: 'M', spec: 'Tujuan: a\nFile: b.js\nDependensi: tidak ada\nImplementasi: c\nError/edge case: d\nKriteria selesai: e\nVerifikasi: f' }))
+    }).tasks.map(t => t.id);
+    assert.deepEqual(norm(['T-1', 'T-2', 'T-10']), ['TASK-01', 'TASK-02', 'TASK-10']);
+    assert.deepEqual(norm(['T1', 'T2']), ['TASK-01', 'TASK-02']);
+    assert.deepEqual(norm(['TASK-03', 'TASK-04']), ['TASK-03', 'TASK-04']);
+    // ID kosong diberi nomor urut, bukan dibiarkan.
+    assert.deepEqual(normalizePRDFields({ tasks: [{ title: 'x', module: 'M' }] }).tasks.map(t => t.id), ['TASK-01']);
+  });
+
   await test('abbreviated model field names are mapped, real values are not overwritten', () => {
     // Regresi nyata: fitur memakai "acceptance" alih-alih "acceptanceCriteria",
     // sehingga 7 fitur yang isinya lengkap dianggap tanpa kriteria.
