@@ -436,8 +436,31 @@ try {
     assert.equal(result.tasks.length, uiTasks.length);
     assert.equal(calls.length, 6);
     assert.match(calls[3].body.messages[1].content, /terpotong/i);
+    // Hint pemadatan harus sesuai tahap, bukan menyebut summary di retry tasks.
+    assert.match(calls[3].body.messages[1].content, /features 3-6 modul/i);
     // Batas token harus selalu dikirim, kalau tidak router memotong sendiri.
     assert.equal(calls[0].body.max_tokens > 0, true);
+  });
+
+  await test('truncated tasks retry uses a tasks-specific compacting hint', async () => {
+    process.env.PRDMAKER_API_KEY = 'offline-test-key';
+    process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
+    process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
+    process.env.PRDMAKER_CONFIG = '/does/not/exist';
+    // Regresi nyata: retry truncation tasks memakai hint summary/architecture,
+    // sehingga jawaban kedua tetap kepanjangan dan terpotong lagi.
+    const calls = mockQueue([
+      identityOf(uiSkeleton), coreOf(uiSkeleton), featuresOf(uiSkeleton), schemaOf(uiSkeleton),
+      [{ tasks: uiTasks }, 'length'],
+      [{ tasks: uiTasks }, 'stop']
+    ]);
+    const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
+    assert.equal(result.tasks.length, uiTasks.length);
+    assert.equal(calls.length, 6);
+    const retry = calls[5].body.messages[1].content;
+    assert.match(retry, /Maksimal 7 task/i);
+    assert.match(retry, /terpotong/i);
+    assert.doesNotMatch(retry, /architectureOverview maksimal 250 kata/);
   });
 
   await test('a permanently truncated stage reports the budget problem to the user', async () => {

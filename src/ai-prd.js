@@ -1062,15 +1062,20 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
 
   // Keluaran terpotong (finish_reason=length) bukan kesalahan model, tapi
   // anggaran token. Satu percobaan ulang dengan instrksi memendekkan.
-  async function callWithTruncationRetry(system, prompt) {
+  async function callWithTruncationRetry(system, prompt, compactHint = '') {
     try {
       return await callRouter(routerCfg, chosenModel, system, prompt);
     } catch (err) {
       if (err.message !== 'output_truncated') throw err;
       console.warn('[AI-PRD] Keluaran terpotong, mengulang dengan instruksi lebih padat...');
+      // Hint pemadatan per tahap: instruksi lama menyebut summary/architecture
+      // di semua tahap, sehingga retry tasks tidak pernah lebih pendek dan
+      // terpotong lagi (terukur di live run).
+      const hint = compactHint ||
+        'Ringkas: architectureOverview maksimal 250 kata, summary maksimal 180 kata, features 3-6 modul.';
       return await callRouter(routerCfg, chosenModel, system,
-        prompt + '\n\nPENTING: jawaban sebelumnya terpotong. Ringkas: architectureOverview maksimal 250 kata, ' +
-        'summary maksimal 180 kata, features 3-6 modul. Tetap keluarkan SEMUA field sampai JSON penutup.');
+        prompt + `\n\nPENTING: jawaban sebelumnya terpotong karena terlalu panjang. ${hint} ` +
+        'Tetap keluarkan SEMUA field sampai JSON penutup.');
     }
   }
 
@@ -1078,9 +1083,9 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
   // yang diminta tidak muncul padahal panggilannya sukses. Karena itu tiap
   // tahap memeriksa kuncinya sendiri dan mengulang sekali kalau bentuknya salah.
   // ponytail: hapus kalau router berhenti mengembalikan bentuk tahap lain.
-  async function callStage(label, system, prompt, requiredKeys) {
+  async function callStage(label, system, prompt, requiredKeys, compactHint = '') {
     const attempt = async (suffix) => {
-      const out = await callWithTruncationRetry(system, prompt + suffix);
+      const out = await callWithTruncationRetry(system, prompt + suffix, compactHint);
       const missing = requiredKeys.filter((k) => out?.[k] === undefined);
       if (missing.length) {
         console.warn(`[AI-PRD] Tahap ${label} tidak mengembalikan ${missing.join(', ')}; mengulang.`);
@@ -1253,9 +1258,15 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     console.log(`[AI-PRD] Tahap 2/2 tasks via ${chosenModel}...`);
     const context = `Ide: ${userIdea}\nKerangka PRD tahap 1:\n${JSON.stringify(skeleton)}\n\n` +
       `Daftar nama modul (pakai persis untuk field "module"): ${modules.join(', ')}\n\n`;
+    // Hint pemadatan khusus tasks: spec adalah bagian terpanjang dan yang
+    // paling sering menembus plafon 7000 token.
+    const tasksHint = 'Maksimal 7 task. Setiap spec maksimal 130 kata: tetap memuat ketujuh label ' +
+      '(Tujuan, File, Dependensi, Implementasi, Error/edge case, Kriteria selesai, Verifikasi) ' +
+      'tapi tiap label satu kalimat pendek. title maksimal 10 kata.';
     let tasksRes = await callWithTruncationRetry(
       tasksSystemPrompt,
-      context + 'Susun tasks sekarang.'
+      context + 'Susun tasks sekarang.',
+      tasksHint
     );
     let parsed = normalizePRDFields({ ...skeleton, tasks: Array.isArray(tasksRes?.tasks) ? tasksRes.tasks : [] });
     let problems = validatePRD(parsed);
@@ -1263,7 +1274,8 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       console.warn(`[AI-PRD] Tahap 2 ditolak validator: ${problems.join('; ')}`);
       const retryRes = await callWithTruncationRetry(
         tasksSystemPrompt,
-        context + `Perbaiki tasks. Jangan mengubah kerangka. Masalah: ${problems.join('; ')}`
+        context + `Perbaiki tasks. Jangan mengubah kerangka. Masalah: ${problems.join('; ')}`,
+        tasksHint
       );
       // Perbaikan hanya dipakai kalau benar-benar mengurangi masalah. Model
       // kadang menjawab dengan skema lain (description/files/acceptanceCriteria
