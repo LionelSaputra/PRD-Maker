@@ -334,6 +334,27 @@ try {
     assert.ok(!calls.some(c => /Perbaiki databaseSchema/i.test(c.body.messages[1].content)));
   });
 
+  await test('tasks context is trimmed to what the stage needs', async () => {
+    process.env.PRDMAKER_API_KEY = 'offline-test-key';
+    process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
+    process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
+    process.env.PRDMAKER_CONFIG = '/does/not/exist';
+    // Konteks tasks yang membengkak membuat generasi lambat dan tidak stabil
+    // (terukur 55s-178s untuk input identik, mepet batas upstream 249s).
+    // Bagian yang tidak dipakai validator tasks tidak boleh ikut terkirim.
+    const calls = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), featuresOf(uiSkeleton), schemaOf(uiSkeleton), { tasks: uiTasks }]);
+    await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
+    const tasksUser = calls[4].body.messages[1].content;
+    // Yang WAJIB ada: nama modul, tabel, dan endpoint untuk coverage task.
+    for (const f of uiSkeleton.features) assert.ok(tasksUser.includes(f.module), 'modul harus ada di konteks tasks: ' + f.module);
+    for (const t of uiSkeleton.databaseSchema) assert.ok(tasksUser.includes(t.table), 'tabel harus ada: ' + t.table);
+    for (const e of uiSkeleton.apiEndpoints) assert.ok(tasksUser.includes(e.path), 'endpoint harus ada: ' + e.path);
+    // Yang TIDAK boleh ada: prosa panjang yang tidak dipakai tahap tasks.
+    assert.ok(!tasksUser.includes(uiSkeleton.architectureOverview), 'arsitektur penuh tidak boleh dikirim ke tahap tasks');
+    assert.ok(tasksUser.length < uiSkeleton.architectureOverview.length + uiSkeleton.summary.length + 4000,
+      'konteks tasks harus lebih ramping dari skeleton penuh: ' + tasksUser.length);
+  });
+
   await test('a tasks-stage failure reuses the good skeleton on the next model', async () => {
     process.env.PRDMAKER_API_KEY = 'offline-test-key';
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';

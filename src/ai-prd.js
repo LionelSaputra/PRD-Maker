@@ -1267,10 +1267,37 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     return skeleton;
   }
 
+  // Konteks tahap tasks dipangkas ke yang DIPAKAI validator dan model saja.
+  // Mengirim skeleton verbatim (summary 1700 + arsitektur 3200 char) membuat
+  // generasi tasks melambat dan sangat bervariasi (terukur: 55s-178s untuk
+  // input identik), mepet batas ~249 detik upstream OpenAgentic -> 502.
+  // Yang dibuang tidak dipakai validator tasks: summary, architectureOverview,
+  // userStories, edgeCases, payload/response. Yang dipertahankan: module +
+  // description + acceptanceCriteria (deteksi kemampuan), nama tabel + fields,
+  // method + path endpoint.
+  function taskContext(skeleton) {
+    const features = (skeleton.features || []).filter(Boolean).map((f) => ({
+      module: f.module,
+      description: String(f.description || '').slice(0, 320),
+      acceptanceCriteria: (f.acceptanceCriteria || []).slice(0, 5)
+    }));
+    const tables = (skeleton.databaseSchema || []).filter(Boolean).map((t) => ({
+      table: t.table, fields: t.fields
+    }));
+    const endpoints = (skeleton.apiEndpoints || []).filter(Boolean).map((e) => ({
+      method: e.method, path: e.path, description: String(e.description || '').slice(0, 160)
+    }));
+    return JSON.stringify({
+      projectName: skeleton.projectName,
+      techStack: skeleton.techStack,
+      features, databaseSchema: tables, apiEndpoints: endpoints
+    });
+  }
+
   async function generateTasks(skeleton) {
     const modules = skeleton.features.filter(Boolean).map(feature => feature.module).filter(Boolean);
     console.log(`[AI-PRD] Tahap 2/2 tasks via ${chosenModel}...`);
-    const context = `Ide: ${userIdea}\nKerangka PRD tahap 1:\n${JSON.stringify(skeleton)}\n\n` +
+    const context = `Ide: ${userIdea}\nKerangka PRD tahap 1 (dipangkas ke yang relevan untuk tasks):\n${taskContext(skeleton)}\n\n` +
       `Daftar nama modul (pakai persis untuk field "module"): ${modules.join(', ')}\n\n`;
     // Hint pemadatan khusus tasks: spec adalah bagian terpanjang dan yang
     // paling sering menembus plafon 7000 token.

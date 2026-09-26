@@ -2,6 +2,7 @@
 // produksi dengan transaksi yang sama persis. Ini membuktikan PRD benar-benar
 // tersimpan, bukan hanya tertulis sebagai artefak.
 import { randomUUID } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { generatePRDFromPrompt } from '../src/ai-prd.js';
 
@@ -13,6 +14,12 @@ const started = Date.now();
 const prd = await generatePRDFromPrompt(idea, name, [], process.env.PRDMAKER_MODEL || 'oa/space-bunny-free');
 console.log('generate selesai dalam', Math.round((Date.now() - started) / 1000), 'dtk');
 
+// Artefak disimpan SEBELUM menulis DB: generate adalah bagian termahal
+// (5-12 menit); kalau penyimpanan gagal, hasilnya tidak boleh ikut hilang.
+const artifact = `/opt/backups/ngodingpakeai-live-${(process.env.PRDMAKER_MODEL || 'default').replace(/[^a-z0-9-]+/gi, '-')}-result.json`;
+writeFileSync(artifact, JSON.stringify(prd, null, 2));
+console.log('artefak:', artifact);
+
 const db = new DatabaseSync('/opt/ngodingpakeai/data.db');
 const wsId = 'ws_' + randomUUID().substring(0, 8);
 const token = 'tok_' + randomUUID().replace(/-/g, '');
@@ -23,7 +30,10 @@ const insertWs = db.prepare(`
 `);
 const insertTask = db.prepare(`INSERT INTO tasks (id, workspace_id, title, spec, status) VALUES (?, ?, ?, ?, 'todo')`);
 
-db.transaction(() => {
+// node:sqlite tidak punya db.transaction() (itu API better-sqlite3 yang
+// dipakai server). Transaksi manual; rollback kalau ada yang gagal.
+db.exec('BEGIN');
+try {
   insertWs.run(
     wsId, token,
     prd.name || prd.projectName || name,
@@ -41,7 +51,11 @@ db.transaction(() => {
     const slug = t.id || `TASK-${String(i + 1).padStart(2, '0')}`;
     insertTask.run(`${wsId}_${slug}`, wsId, t.title, t.spec);
   });
-})();
+  db.exec('COMMIT');
+} catch (e) {
+  db.exec('ROLLBACK');
+  throw e;
+}
 
 // Baca ulang dari DB — bukti, bukan asumsi.
 const ws = db.prepare('SELECT id, name, tagline, summary, features_json, db_schema_json, api_endpoints_json, tech_stack FROM workspaces WHERE id = ?').get(wsId);
