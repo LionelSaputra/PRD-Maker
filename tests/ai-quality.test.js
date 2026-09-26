@@ -437,6 +437,43 @@ try {
     assert.deepEqual(result.features.map(f => f.module), uiSkeleton.features.map(f => f.module));
   });
 
+  await test('validation failure discards only the bad stage and its dependents, keeping upstream progress', async () => {
+    process.env.PRDMAKER_API_KEY = 'offline-test-key';
+    process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
+    process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
+    process.env.PRDMAKER_CONFIG = '/does/not/exist';
+    // Regresi nyata: fitur lemah ditolak validator; dulu SELURUH cache dibuang
+    // sehingga identitas+stack yang benar ikut hilang tiap percobaan. Di router
+    // goyah itu berarti PRD tidak pernah selesai. Sekarang hanya 'fitur' dan
+    // turunannya yang diulang.
+    const weakFeatures = { features: [{ module: '', description: '' }] };
+    let phase = 'weak';
+    const calls = [];
+    globalThis.fetch = async (url, options = {}) => {
+      if (url.endsWith('/models')) return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      const body = JSON.parse(options.body);
+      calls.push(body);
+      const prompt = body.messages[0].content;
+      if (prompt.includes('apiEndpoints')) return completion(apiOf(uiSkeleton));
+      if (prompt.includes('databaseSchema')) return completion(dbOf(uiSkeleton));
+      if (prompt.includes('"features"')) return completion(phase === 'weak' ? weakFeatures : featuresOf(uiSkeleton));
+      if (prompt.includes('architectureOverview')) return completion(coreOf(uiSkeleton));
+      if (prompt.includes('dari kerangka PRD')) return completion({ tasks: uiTasks });
+      return completion(identityOf(uiSkeleton));
+    };
+    // Percobaan 1: fitur lemah -> validator menolak kerangka -> gagal.
+    await assert.rejects(() => generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra'), /TIDAK lolos|kerangka|fitur/i);
+    // Percobaan 2: fitur sehat. Identitas & stack HARUS dari cache (tidak dipanggil ulang).
+    phase = 'healthy';
+    calls.length = 0;
+    const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
+    assert.equal(result.tasks.length, uiTasks.length);
+    const prompts = calls.map(c => c.messages[0].content);
+    assert.ok(!prompts.some(p => p.includes('Tulis identitas produk')), 'identitas benar tidak boleh diulang');
+    assert.ok(!prompts.some(p => /tepat dua kunci/.test(p)), 'stack benar tidak boleh diulang');
+    assert.ok(prompts.some(p => p.includes('"features"')), 'fitur cacat harus disusun ulang');
+  });
+
   await test('a dead run resumes from disk cache: completed stages are not re-requested', async () => {
     process.env.PRDMAKER_API_KEY = 'offline-test-key';
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';

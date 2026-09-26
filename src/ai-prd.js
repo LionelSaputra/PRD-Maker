@@ -1164,6 +1164,35 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       if (stageCache.size) console.log(`[AI-PRD] Melanjutkan progres tersimpan: ${stageCache.size} tahap sudah selesai dari percobaan sebelumnya (${[...stageCache.keys()].join(', ')}).`);
     }
   } catch {}
+  // Urutan dependensi tahap. Tiap tahap memakai keluaran tahap sebelumnya
+  // (daftar modul masuk prompt skema; skema+API masuk konteks tasks), jadi
+  // tahap yang cacat membatalkan semua tahap DI BAWAHNYA — tetapi tidak tahap
+  // hulu yang sudah benar.
+  const STAGE_ORDER = ['identitas', 'stack & arsitektur', 'fitur', 'skema data', 'kontrak API', 'tasks'];
+  const problemStage = (p) => {
+    if (/tabel|databaseSchema|fields/i.test(p)) return 'skema data';
+    if (/endpoint|apiEndpoints/i.test(p)) return 'kontrak API';
+    if (/fitur|Design System|acceptanceCriteria|userStories|modul/i.test(p)) return 'fitur';
+    if (/summary|ringkasan|batas lingkup|skala|projectName|tagline/i.test(p)) return 'identitas';
+    return 'stack & arsitektur';
+  };
+  function invalidateStages(problems) {
+    // Terukur live: fitur ditolak validator (acceptanceCriteria kurang), dan
+    // pembuangan SELURUH cache membuat identitas+stack yang sudah benar
+    // (~40-60 dtk kerja) hilang tiap percobaan — di router yang goyah PRD
+    // tidak pernah selesai. Sekarang hanya tahap bermasalah + turunannya yang
+    // dibuang (termasuk dari disk, supaya teks korup tidak dimuat ulang), dan
+    // cache tahap perbaikan ikut dibuang karena akan disusun ulang.
+    const idx = problems.length
+      ? Math.min(...problems.map(p => { const i = STAGE_ORDER.indexOf(problemStage(p)); return i < 0 ? 0 : i; }))
+      : 0;
+    const doomed = new Set(STAGE_ORDER.slice(idx));
+    for (const label of [...stageCache.keys()]) {
+      if (label.startsWith('perbaikan') || doomed.has(label)) stageCache.delete(label);
+    }
+    try { fs.writeFileSync(stageCacheFile, JSON.stringify({ savedAt: Date.now(), stages: Object.fromEntries(stageCache) })); } catch {}
+    console.warn(`[AI-PRD] Validator menolak kerangka; membuang tahap ${[...doomed].join(', ')} dan hasil perbaikan; tahap hulu yang benar dipertahankan.`);
+  }
 
   async function callStage(label, system, prompt, requiredKeys, compactHint = '') {
     if (stageCache.has(label)) {
@@ -1492,13 +1521,8 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       // menyalahkan tahap yang sudah benar: cache dipertahankan, dan model
       // berikutnya hanya mengulang tahap yang gagal.
       if (err.validationStage === 'kerangka PRD') {
-        stageCache.clear();
+        invalidateStages(err.validationProblems || []);
         skeletonDone = null;
-        // Cache DISK juga wajib dibuang: tahap yang lolos cek kunci callStage
-        // bisa masih korup (terukur: architectureOverview berisi "menAdded",
-        // "bukan<Category>"). Tanpa ini, run berikutnya memuat ulang tahap
-        // korup yang sama dan menolak PRD selamanya.
-        try { fs.rmSync(stageCacheFile, { force: true }); } catch {}
       }
       console.error(`[AI-PRD] Gagal via ${chosenModel}:`, err.message);
     }
