@@ -126,6 +126,30 @@ try {
   assert.ok(seen.every(r=>chain.has(r.model)),'hanya model terpilih + rantai cadangan yang boleh dipakai: '+[...new Set(seen.map(r=>r.model))]);
   // Kontrak desain menyatu di system prompt tahap arsitektur, tepat satu kali.
   assert.ok(seen.filter(r => r.messages[0].content.includes('architectureOverview')).every(r => (r.messages[0].content.match(/KONTRAK DESAIN ANTI AI-SLOP/g) || []).length === 1));
+
+  // Generate ASINKRON (web UI): job + polling, bukan request panjang yang
+  // diputus nginx/Cloudflare menjadi HTML.
+  const jobStart = await request('/api/v1/generate-jobs','POST',{idea:'Arsip surat async',model:'oa/gpt-6-astra'});
+  assert.equal(jobStart.status,202,JSON.stringify(jobStart.data)+logs);
+  const jobId = jobStart.data.jobId;
+  assert.ok(jobId,'jobId harus dikembalikan');
+  // Tanpa sesi -> 401; job tak dikenal -> 404.
+  assert.equal((await request('/api/v1/generate-jobs','POST',{idea:'x'},false)).status,401);
+  assert.equal((await request('/api/v1/generate-jobs/job_tidakada')).status,404);
+  // Poll sampai selesai (mock AI cepat; batas 100 iterasi x 20ms).
+  let job;
+  for (let i=0;i<100;i++){
+    job=(await request('/api/v1/generate-jobs/'+jobId)).data;
+    if(job.status!=='running') break;
+    await new Promise(r=>setTimeout(r,20));
+  }
+  assert.equal(job.status,'done',JSON.stringify(job)+logs);
+  assert.ok(job.workspace.workspace.id.startsWith('ws_'));
+  assert.equal(job.workspace.totalTasks,8);
+  const asyncPath='/api/v1/workspaces/'+job.workspace.workspace.id;
+  assert.equal((await request(asyncPath)).status,200,'workspace hasil job harus tersimpan di DB');
+  assert.equal((await request(asyncPath,'DELETE')).status,200);
+
   assert.equal((await request(path,'DELETE',undefined,false)).status,401);
   assert.equal((await request(path,'DELETE')).status,200);
   assert.equal((await request(path)).status,404);
