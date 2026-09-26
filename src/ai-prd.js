@@ -1187,9 +1187,15 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       err.missing = missing;
       throw err;
     }
-    stageCache.set(label, out);
+    // Simpan HANYA kunci milik tahap ini. Terukur live: tahap fitur kadang
+    // mengembalikan bentuk gabungan (projectName/summary/architectureOverview
+    // ikut terbawa), dan merge skeleton {...core, ...detail} membuat
+    // architectureOverview BURUK dari tahap fitur menimpa teks bagus dari
+    // tahap stack — validator lalu menolak PRD yang sebenarnya benar.
+    const picked = Object.fromEntries(requiredKeys.map((k) => [k, out[k]]));
+    stageCache.set(label, picked);
     try { fs.writeFileSync(stageCacheFile, JSON.stringify({ savedAt: Date.now(), stages: Object.fromEntries(stageCache) })); } catch {}
-    return out;
+    return picked;
   }
 
   async function generateSkeleton() {
@@ -1488,6 +1494,11 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       if (err.validationStage === 'kerangka PRD') {
         stageCache.clear();
         skeletonDone = null;
+        // Cache DISK juga wajib dibuang: tahap yang lolos cek kunci callStage
+        // bisa masih korup (terukur: architectureOverview berisi "menAdded",
+        // "bukan<Category>"). Tanpa ini, run berikutnya memuat ulang tahap
+        // korup yang sama dan menolak PRD selamanya.
+        try { fs.rmSync(stageCacheFile, { force: true }); } catch {}
       }
       console.error(`[AI-PRD] Gagal via ${chosenModel}:`, err.message);
     }
