@@ -24,9 +24,12 @@ const runs = [
   ['fitur', constant('PRD_FEATURES_SYSTEM_PROMPT'), userBase + decidedText +
     `\nStack yang ditetapkan (techStack): ${JSON.stringify(['Node.js 22 LTS'])}\n` +
     'Susun features sekarang.', ['features']],
-  ['skema', constant('PRD_DB_API_SYSTEM_PROMPT'), userBase + decidedText +
+  ['skema-db', constant('PRD_DB_SYSTEM_PROMPT'), userBase + decidedText +
     `\nStack yang ditetapkan (techStack): ${JSON.stringify(['Node.js 22 LTS'])}\n` +
-    'Susun databaseSchema dan apiEndpoints sekarang.', ['databaseSchema', 'apiEndpoints']],
+    'Susun databaseSchema sekarang.', ['databaseSchema']],
+  ['skema-api', constant('PRD_API_SYSTEM_PROMPT'), userBase + decidedText +
+    `\nStack yang ditetapkan (techStack): ${JSON.stringify(['Node.js 22 LTS'])}\n` +
+    'Susun apiEndpoints sekarang.', ['apiEndpoints']],
   ['tasks', constant('PRD_TASKS_SYSTEM_PROMPT'), `Ide: arsip surat untuk 5 petugas\nKerangka PRD tahap 1:\n${JSON.stringify(decided)}\n\nDaftar nama modul: Arsip, Design System\n\nSusun tasks sekarang.`, ['tasks']]
 ];
 
