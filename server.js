@@ -2242,14 +2242,16 @@ function renderHTML() {
           let job;
           try { job = await st.json(); } catch { continue; } // jaringan sesaat: lanjut poll
           if (job.status === 'running') continue;
-          if (job.status === 'error') throw new Error(job.error);
           if (job.status === 'done') {
             window.location.hash = job.workspace.workspace.id;
             createdWorkspaceTokens[job.workspace.workspace.id] = job.workspace.workspace.token;
             loadWorkspace(job.workspace.workspace.id);
             loadHistorySidebar();
+            break;
           }
-          break;
+          // 'error', atau job hilang (404) karena server restart di tengah
+          // jalan: beri tahu user, jangan diam-diam mereset tombol.
+          throw new Error(job.error || 'Proses penyusunan hilang (server restart). Susun ulang PRD-nya.');
         }
       } catch (err) {
         alert('Gagal: ' + err.message);

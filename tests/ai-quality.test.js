@@ -334,6 +334,43 @@ try {
     assert.ok(!calls.some(c => /Perbaiki databaseSchema/i.test(c.body.messages[1].content)));
   });
 
+  await test('a tasks-stage failure reuses the good skeleton on the next model', async () => {
+    process.env.PRDMAKER_API_KEY = 'offline-test-key';
+    process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
+    process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
+    process.env.PRDMAKER_CONFIG = '/does/not/exist';
+    // Skeleton sukses di model pertama, tapi tasks-nya rusak. Model cadangan
+    // harus hanya menulis tasks: kerangka yang sudah benar tidak boleh diulang
+    // (itu yang dulu membuat satu generate terasa 4+ menit).
+    const calls = [];
+    globalThis.fetch = async (url, options = {}) => {
+      if (url.endsWith('/models')) return new Response(JSON.stringify({ data: [{ id: 'oa/mimo-v2.6-flash' }] }), { status: 200 });
+      const body = JSON.parse(options.body);
+      calls.push(body);
+      const prompt = body.messages[0].content;
+      if (prompt.includes('"projectName"')) return completion(identityOf(uiSkeleton));
+      if (prompt.includes('architectureOverview')) return completion(coreOf(uiSkeleton));
+      if (prompt.includes('"features"')) return completion(featuresOf(uiSkeleton));
+      if (prompt.includes('databaseSchema')) return completion(schemaOf(uiSkeleton));
+      // tasks: model pertama menjawab kosong, cadangan menjawab benar.
+      if (body.model === 'oa/gpt-6-astra') return completion({ tasks: [] });
+      return completion({ tasks: uiTasks });
+    };
+    const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
+    assert.equal(result.tasks.length, uiTasks.length);
+    // Tahap 1 hanya ditulis sekali (4 panggilan) meski dua model dipakai.
+    const stageOneCalls = calls.filter(c => /"projectName"|"features"|databaseSchema/.test(c.messages[0].content));
+    assert.equal(stageOneCalls.length, 3, 'identitas+fitur+skema harus sekali saja: ' + stageOneCalls.length);
+    // Penanda unik prompt tasks: prompt inti teknis juga menyebut "Lead Engineer".
+    // tasks boleh di-retry internal, yang penting KEDUA model mencobanya dan
+    // kerangka tidak pernah ditulis ulang.
+    const taskCalls = calls.filter(c => c.messages[0].content.includes('dari kerangka PRD'));
+    // Cadangan berikutnya dalam rantai tetap space-bunny (rantai tidak
+    // dipengaruhi isi /models), dan tahap 1 tidak boleh diulang model cadangan.
+    assert.deepEqual([...new Set(taskCalls.map(c => c.model))], ['oa/gpt-6-astra', 'oa/space-bunny-free']);
+    assert.ok(stageOneCalls.every(c => c.model === 'oa/gpt-6-astra'), 'tahap 1 tidak boleh diulang model cadangan');
+  });
+
   await test('a failing chosen model falls back to the measured chain, and the PRD still lands', async () => {
     process.env.PRDMAKER_API_KEY = 'offline-test-key';
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
