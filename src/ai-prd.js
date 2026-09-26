@@ -1083,7 +1083,20 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
   // yang diminta tidak muncul padahal panggilannya sukses. Karena itu tiap
   // tahap memeriksa kuncinya sendiri dan mengulang sekali kalau bentuknya salah.
   // ponytail: hapus kalau router berhenti mengembalikan bentuk tahap lain.
+  // Hasil tahap yang SUDAH lolos pemeriksaan kuncinya. Terukur: luna
+  // menyelesaikan identitas+stack+fitur dalam 51 detik, lalu 502 di tahap
+  // skema; tanpa cache fallback mengulang dari nol sehingga satu generate
+  // terasa 4+ menit padahal sebagian besar kerjanya sudah benar.
+  // Kontinuitas antar model aman karena tiap prompt membawa keputusan tahap
+  // sebelumnya sebagai teks (decidedText + techStack), bukan mengandalkan
+  // ingatan model.
+  const stageCache = new Map();
+
   async function callStage(label, system, prompt, requiredKeys, compactHint = '') {
+    if (stageCache.has(label)) {
+      console.log(`[AI-PRD] Tahap ${label} memakai hasil yang sudah berhasil dari model sebelumnya.`);
+      return stageCache.get(label);
+    }
     const attempt = async (suffix) => {
       const out = await callWithTruncationRetry(system, prompt + suffix, compactHint);
       const missing = requiredKeys.filter((k) => out?.[k] === undefined);
@@ -1101,6 +1114,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       err.missing = missing;
       throw err;
     }
+    stageCache.set(label, out);
     return out;
   }
 
@@ -1303,15 +1317,27 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
   // informatif (kesalahan bentuk/validasi mengalahkan "koneksi gagal"), karena
   // model terakhir dalam rantai mungkin cuma kena 502 sesaat.
   const failures = [];
+  // Kerangka yang SUDAH lolos validasi dipakai ulang bila kegagalan terjadi di
+  // tahap tasks: model berikutnya hanya menulis tasks, bukan seluruh PRD.
+  let skeletonDone = null;
   for (let i = 0; i < candidates.length; i++) {
     chosenModel = candidates[i];
     if (i > 0) console.log(`[AI-PRD] Mencoba model cadangan ${chosenModel} (${i + 1}/${candidates.length})...`);
     try {
-      const skeleton = await generateSkeleton();
-      return await generateTasks(skeleton);
+      if (!skeletonDone) skeletonDone = await generateSkeleton();
+      return await generateTasks(skeletonDone);
     } catch (err) {
       lastRouterError = err.message;
       failures.push(err);
+      // Kegagalan ISI kerangka berarti konten tahap-tahap itu memang tidak
+      // bisa dipakai, jadi cache dibuang supaya model berikutnya menulis
+      // ulang. Kegagalan transport (502/429/timeout) atau bentuk salah tidak
+      // menyalahkan tahap yang sudah benar: cache dipertahankan, dan model
+      // berikutnya hanya mengulang tahap yang gagal.
+      if (err.validationStage === 'kerangka PRD') {
+        stageCache.clear();
+        skeletonDone = null;
+      }
       console.error(`[AI-PRD] Gagal via ${chosenModel}:`, err.message);
     }
   }
