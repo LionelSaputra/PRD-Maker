@@ -1695,6 +1695,7 @@ function renderHTML() {
               <option value="oa/space-bunny-free">Space Bunny, rekomendasi untuk PRD</option>
               <option value="">Default konfigurasi server</option>
             </select>
+            <p class="hint" id="model-hint">Model yang Anda pilih dipakai apa adanya (tidak otomatis berpindah). Pilih “Default konfigurasi server” bila ingin sistem mencoba model cadangan saat satu model gagal.</p>
           </div>
 
           <div class="form-group">
@@ -1986,6 +1987,7 @@ function renderHTML() {
         const prev = select.value;
         // Label ramah dibaca untuk model yang dikenal; sisanya pakai kode apa adanya.
         const LABELS = {
+          'oa/gpt-6-luna': 'GPT 6 Luna',
           'oa/mimo-v2.6-flash': 'Mimo 2.6 Flash',
           'oa/gpt-6-astra': 'GPT 6 Astra',
           'oa/space-bunny-free': 'Space Bunny',
