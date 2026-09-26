@@ -419,6 +419,24 @@ try {
     assert.ok(stageOneCalls.every(c => c.model === 'oa/gpt-6-astra'), 'tahap 1 tidak boleh diulang model cadangan');
   });
 
+  await test('a stage returning extra keys cannot overwrite an earlier stage in the skeleton merge', async () => {
+    process.env.PRDMAKER_API_KEY = 'offline-test-key';
+    process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
+    process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
+    process.env.PRDMAKER_CONFIG = '/does/not/exist';
+    // Regresi nyata (live space-bunny): tahap fitur mengembalikan bentuk
+    // GABUNGAN — architectureOverview versi buruk ikut terbawa. Merge
+    // {...core, ...detail} lalu menimpa architectureOverview bagus dari tahap
+    // stack, dan validator menolak PRD yang sebenarnya benar.
+    const polluted = { ...featuresOf(uiSkeleton), projectName: 'SALAH', summary: 'SALAH', architectureOverview: 'SALAH' };
+    mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), polluted, schemaOf(uiSkeleton), { tasks: uiTasks }]);
+    const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
+    assert.equal(result.architectureOverview, uiSkeleton.architectureOverview, 'arch dari tahap stack tidak boleh ditimpa tahap fitur');
+    assert.equal(result.projectName, uiSkeleton.projectName);
+    assert.equal(result.summary, uiSkeleton.summary);
+    assert.deepEqual(result.features.map(f => f.module), uiSkeleton.features.map(f => f.module));
+  });
+
   await test('a dead run resumes from disk cache: completed stages are not re-requested', async () => {
     process.env.PRDMAKER_API_KEY = 'offline-test-key';
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
