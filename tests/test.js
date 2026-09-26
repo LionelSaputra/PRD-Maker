@@ -64,7 +64,7 @@ try {
   assert.throws(()=>buildTaskPrompt(ws,tasks,'TASK-99'));
   const authPort=await listen(auth), aiPort=await listen(ai);
   const reservation=createServer(); const appPort=await listen(reservation); await new Promise(r=>reservation.close(r));
-  child=spawn(process.execPath,['server.js'],{cwd:root,env:{...process.env,PORT:String(appPort),HOST:'127.0.0.1',DB_PATH:join(temp,'test.db'),AUTH_CHECK_URL:`http://127.0.0.1:${authPort}/check`,PRDMAKER_CONFIG:join(temp,'no-config'),PRDMAKER_API_KEY:'test-only',PRDMAKER_BASE_URL:`http://127.0.0.1:${aiPort}/v1`,PRDMAKER_MODEL:'oa/gpt-6-astra',PRDMAKER_BACKOFF_SCALE:'0.01'}});
+  child=spawn(process.execPath,['server.js'],{cwd:root,env:{...process.env,PORT:String(appPort),HOST:'127.0.0.1',DB_PATH:join(temp,'test.db'),AUTH_CHECK_URL:`http://127.0.0.1:${authPort}/check`,PRDMAKER_CONFIG:join(temp,'no-config'),PRDMAKER_API_KEY:'test-only',PRDMAKER_BASE_URL:`http://127.0.0.1:${aiPort}/v1`,PRDMAKER_MODEL:'oa/gpt-6-astra',PRDMAKER_BACKOFF_SCALE:'0.01',PRDMAKER_STAGE_CACHE_DIR:join(temp,'stage-cache')}});
   child.stdout.on('data',d=>logs+=d); child.stderr.on('data',d=>logs+=d);
   const base=`http://127.0.0.1:${appPort}`;
   for(let i=0;i<50;i++) { try {await fetch(base,{signal:AbortSignal.timeout(200)});break;}catch {if(child.exitCode!==null)throw Error(logs); await new Promise(r=>setTimeout(r,50));} }

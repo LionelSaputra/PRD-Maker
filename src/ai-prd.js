@@ -1,5 +1,6 @@
 import fs from 'fs';
 import os from 'os';
+import crypto from 'crypto';
 import { join } from 'path';
 import { designTemplatePromptBlock, designDirectionPromptBlock } from './design-templates.js';
 import { getDesignGuidance } from './design-guidance.js';
@@ -1060,6 +1061,38 @@ Jawaban sebelumnya ditolak karena berisi teks/markdown, bukan JSON. Jangan menul
   }
 }
 
+// ===== Cache tahap PERSISTEN antar-run (resume) =====
+// Router free tidak stabil: run mati di tengah berarti semua tahap yang sudah
+// sukses hilang dan run berikutnya mengulang dari nol. Dengan cache ini, tiap
+// klik "Susun PRD" MENAMBAH progres: tahap yang sudah sukses disimpan ke disk
+// dan run berikutnya hanya mengulang tahap yang gagal. Kunci = hash(ide +
+// klarifikasi + model), jadi ide atau model berbeda tidak saling mencemari.
+// TTL 24 jam: ide yang ditinggalkan tidak menumpuk selamanya.
+// Lokasi dapat dioverride lewat PRDMAKER_STAGE_CACHE_DIR (test memakainya).
+const STAGE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+function stageCacheDir() {
+  const dir = process.env.PRDMAKER_STAGE_CACHE_DIR || '/opt/ngodingpakeai/data/stage-cache';
+  fs.mkdirSync(dir, { recursive: true });
+  // Sapu entri kedaluwarsa (murah, sekali per proses generate).
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      const p = join(dir, f);
+      if (f.endsWith('.json') && Date.now() - fs.statSync(p).mtimeMs > STAGE_CACHE_TTL_MS) fs.rmSync(p, { force: true });
+    }
+  } catch {}
+  return dir;
+}
+function stageCacheKey(userIdea, name, clarifications, model, designDirection) {
+  return crypto.createHash('sha256').update(JSON.stringify([userIdea, name, clarifications, model, designDirection])).digest('hex').slice(0, 32);
+}
+// Dipanggil server setelah PRD tersimpan di DB: progres sudah menjadi produk,
+// cache tidak diperlukan lagi (generate ulang ide yang sama harus fresh).
+export function clearStageCache(userIdea, name, clarifications, model, designDirection) {
+  const cfg = getRouterConfig();
+  const file = join(stageCacheDir(), `${stageCacheKey(userIdea, name, clarifications, model || cfg.defaultModel, designDirection)}.json`);
+  fs.rmSync(file, { force: true });
+}
+
 export async function generatePRDFromPrompt(userIdea, name, clarifications = [], model, designDirection) {
   const routerCfg = getRouterConfig();
   // Model yang dipakai per panggilan. Bisa berganti saat generate memakai model
@@ -1119,6 +1152,18 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
   // sebelumnya sebagai teks (decidedText + techStack), bukan mengandalkan
   // ingatan model.
   const stageCache = new Map();
+  // Resume antar-run: tahap yang sudah sukses pada percobaan sebelumnya
+  // (proses/run yang mati di tengah) dimuat dari disk. Kunci memakai model
+  // AWAL pilihan pengguna; model cadangan ikut memakai progres yang sama
+  // karena decidedText membawa keputusan tahap sebelumnya sebagai teks.
+  const stageCacheFile = join(stageCacheDir(), `${stageCacheKey(userIdea, name, clarifications, model || routerCfg.defaultModel, designDirection)}.json`);
+  try {
+    const cached = JSON.parse(fs.readFileSync(stageCacheFile, 'utf8'));
+    if (cached && Date.now() - cached.savedAt < STAGE_CACHE_TTL_MS) {
+      for (const [label, out] of Object.entries(cached.stages || {})) stageCache.set(label, out);
+      if (stageCache.size) console.log(`[AI-PRD] Melanjutkan progres tersimpan: ${stageCache.size} tahap sudah selesai dari percobaan sebelumnya (${[...stageCache.keys()].join(', ')}).`);
+    }
+  } catch {}
 
   async function callStage(label, system, prompt, requiredKeys, compactHint = '') {
     if (stageCache.has(label)) {
@@ -1143,6 +1188,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       throw err;
     }
     stageCache.set(label, out);
+    try { fs.writeFileSync(stageCacheFile, JSON.stringify({ savedAt: Date.now(), stages: Object.fromEntries(stageCache) })); } catch {}
     return out;
   }
 
@@ -1364,6 +1410,11 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
   }
 
   async function generateTasks(skeleton) {
+    // Resume: tasks yang sudah lolos validasi pada run sebelumnya dipakai lagi.
+    if (stageCache.has('tasks')) {
+      console.log('[AI-PRD] Tahap tasks memakai hasil tersimpan dari percobaan sebelumnya.');
+      return normalizePRDFields({ ...skeleton, tasks: stageCache.get('tasks') });
+    }
     const modules = skeleton.features.filter(Boolean).map(feature => feature.module).filter(Boolean);
     console.log(`[AI-PRD] Tahap 2/2 tasks via ${chosenModel}...`);
     const context = `Ide: ${userIdea}\nKerangka PRD tahap 1 (dipangkas ke yang relevan untuk tasks):\n${taskContext(skeleton)}\n\n` +
@@ -1401,6 +1452,11 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     }
     if (problems.length) throw validationError('tasks', problems);
     console.log(`[AI-PRD] PRD lolos validasi: ${parsed.tasks.length} task, ${parsed.features.length} modul.`);
+    // PRD lengkap ikut tersimpan di cache: kalau proses mati SEBELUM server
+    // menyimpan ke DB (restart/timeout), run berikutnya langsung mengembalikan
+    // hasil ini tanpa memanggil router sama sekali.
+    stageCache.set('tasks', parsed.tasks);
+    try { fs.writeFileSync(stageCacheFile, JSON.stringify({ savedAt: Date.now(), stages: Object.fromEntries(stageCache) })); } catch {}
     return parsed;
   }
 

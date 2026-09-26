@@ -2,7 +2,7 @@ import http from 'http';
 import { readFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { db } from './src/db.js';
-import { generateClarifications, generatePRDFromPrompt, fetchAvailableModels, appendFeatureChange } from './src/ai-prd.js';
+import { generateClarifications, generatePRDFromPrompt, fetchAvailableModels, appendFeatureChange, clearStageCache } from './src/ai-prd.js';
 import { buildPreviewHtml } from './src/preview.js';
 import { DESIGN_DIRECTIONS, designDirectionPromptBlock } from './src/design-templates.js';
 import { buildArchitecturePrompt, buildTaskPrompt } from './src/prompt-export.js';
@@ -136,6 +136,10 @@ function saveWorkspaceFromPRD(prd, body, designDirection) {
     }
   });
   saveWorkspace();
+
+  // PRD sudah menjadi produk di DB: buang cache resume supaya generate ulang
+  // ide yang sama mulai dari nol (bukan memuat progres lama).
+  try { clearStageCache(body.idea, body.name, body.clarifications || [], body.model, designDirection); } catch {}
 
   return {
     workspace: { id: wsId, token, name: prd.name || prd.projectName, summary: prd.summary },
