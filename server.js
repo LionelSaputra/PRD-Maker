@@ -1696,7 +1696,8 @@ function renderHTML() {
           <div class="form-group">
             <label class="label" for="ai-model-select">Pilihan Model AI Engine</label>
             <select class="select-input" id="ai-model-select">
-              <option value="oa/space-bunny-free">Space Bunny, rekomendasi untuk PRD</option>
+              <option value="oa/gemini-3.8-flash-high">Gemini 3.8 Flash High, rekomendasi (tercepat &amp; paling stabil)</option>
+              <option value="oa/space-bunny-free">Space Bunny</option>
               <option value="">Default konfigurasi server</option>
             </select>
             <p class="hint" id="model-hint">Model yang Anda pilih dipakai apa adanya (tidak otomatis berpindah). Pilih “Default konfigurasi server” bila ingin sistem mencoba model cadangan saat satu model gagal.</p>
@@ -1991,13 +1992,17 @@ function renderHTML() {
         const prev = select.value;
         // Label ramah dibaca untuk model yang dikenal; sisanya pakai kode apa adanya.
         const LABELS = {
+          'oa/gemini-3.8-flash-high': 'Gemini 3.8 Flash High',
           'oa/gpt-6-luna': 'GPT 6 Luna',
           'oa/mimo-v2.6-flash': 'Mimo 2.6 Flash',
           'oa/gpt-6-astra': 'GPT 6 Astra',
           'oa/space-bunny-free': 'Space Bunny',
           'oa/glm-5.3': 'GLM 5.3'
         };
-        const recommended = 'oa/space-bunny-free';
+        // Terukur: gemini-3.8-flash-high menuntaskan 6 tahap + tasks dalam 215
+        // detik TANPA satu pun 502, sedangkan space-bunny/luna sering 502
+        // beruntun di tahap tasks (router free goyah untuk generasi panjang).
+        const recommended = 'oa/gemini-3.8-flash-high';
         const serverDefault = document.createElement('option');
         serverDefault.value = '';
         serverDefault.innerText = 'Default konfigurasi server';
@@ -2005,7 +2010,7 @@ function renderHTML() {
         select.appendChild(serverDefault);
         const recommendedOpt = document.createElement('option');
         recommendedOpt.value = recommended;
-        recommendedOpt.innerText = 'Space Bunny, rekomendasi untuk PRD';
+        recommendedOpt.innerText = 'Gemini 3.8 Flash High, rekomendasi (tercepat & paling stabil)';
         select.appendChild(recommendedOpt);
         data.models.filter(m => m !== recommended).forEach(m => {
           const opt = document.createElement('option');
