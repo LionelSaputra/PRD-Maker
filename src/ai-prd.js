@@ -613,13 +613,16 @@ Keluarkan HANYA JSON dengan tepat dua kunci:
 architectureOverview ditulis 2-4 paragraf. Jangan tulis field lain. Jangan menulis catatan atau rencana. Langsung JSON dan tutup dengan }.
 `;
 
-// Tahap 1c: fitur, skema DB, endpoint.
-const PRD_DETAIL_SYSTEM_PROMPT = `
-Kamu Principal Software Architect yang menulis spesifikasi rinci. Bahasa Indonesia tegas, tanpa marketing.
+// Tahap 1c: fitur saja. Terpecah dari skema DB/API karena gabungan ketiganya
+// kadang butuh >7000 completion token dan terpotong, sementara plafon di atas
+// 8000 membuat router menjawab 502 (terukur: features saja ~2400 token,
+// db+api saja ~4300 token, gabungan 5400-7000+ token).
+const PRD_FEATURES_SYSTEM_PROMPT = `
+Kamu Principal Software Architect yang menulis spesifikasi fitur. Bahasa Indonesia tegas, tanpa marketing.
 
-Setiap fitur punya minimal 2 acceptanceCriteria yang bisa diuji, termasuk alur gagal atau edge case. Setiap tabel memiliki fields konkret (tipe, constraint, relasi). Setiap endpoint menyebut input, output, autentikasi/otorisasi dan status error pada description. Nama modul, tabel, dan endpoint harus sama persis di seluruh dokumen. Jangan menambah fitur di luar keputusan pengguna.
+Setiap fitur punya minimal 2 acceptanceCriteria yang bisa diuji, termasuk alur gagal atau edge case. Nama modul harus konsisten dengan stack yang ditetapkan. Jangan menambah fitur di luar keputusan pengguna.
 
-Keluaran HANYA JSON dengan tepat tiga kunci:
+Keluarkan HANYA JSON dengan tepat satu kunci:
 {
   "features": [
     {
@@ -629,30 +632,26 @@ Keluaran HANYA JSON dengan tepat tiga kunci:
       "acceptanceCriteria": ["Kriteria spesifik yang bisa diuji, minimal 2 per modul termasuk alur gagal atau edge case"],
       "edgeCases": ["Kasus ekstrem / error"]
     }
-  ],
+  ]
+}
+
+3-6 modul fitur. Jangan menulis kunci lain. Jangan berhenti sebelum JSON ditutup. Keluaran terpotong = gagal.
+`;
+
+// Tahap 1d: skema data + kontrak API saja.
+const PRD_DB_API_SYSTEM_PROMPT = `
+Kamu Principal Software Architect yang menulis skema data dan kontrak API. Bahasa Indonesia tegas.
+
+Setiap tabel memiliki fields konkret (tipe, constraint, relasi). Setiap endpoint menyebut input, output, autentikasi/otorisasi dan status error pada description. Nama tabel dan endpoint harus mendukung daftar modul fitur yang diberikan.
+
+Keluarkan HANYA JSON dengan tepat dua kunci:
+{
   "databaseSchema": [{ "table": "nama_tabel", "description": "Fungsi tabel", "fields": ["id TEXT PRIMARY KEY", "..."] }],
   "apiEndpoints": [{ "method": "GET | POST | PATCH | DELETE", "path": "/api/v1/...", "description": "Fungsi + siapa boleh akses + status error", "payload": "{ ... }", "response": "{ ... }" }]
 }
 
-3-6 modul fitur. Tulis "Tidak berlaku (tanpa antarmuka)" untuk DB/API pada CLI, bot statis, atau library yang memang tidak membutuhkannya, dan array tetap kosong.
-
-MODUL DESIGN SYSTEM (WAJIB untuk produk ber-antarmuka):
-JANGAN mengubah nama kunci JSON. Field modul bernama "module" (bukan "name"/"title"/"id"). Field task bernama "spec" (bukan "description"/"files").
-Jika produk punya antarmuka (web, desktop, mobile), salah satu modul fitur HARUS bernama "Design System" dan isinya konkret — bukan deskripsi rasa. Modul itu wajib memuat:
-- token warna dengan nilai nyata (minimal 3 nilai HEX/OKLCH: latar, permukaan, aksen),
-- token tipografi (keluarga font, ukuran, berat, line-height),
-- spacing dan radius konkret dalam px/rem,
-- strategi border atau bayangan,
-- bukti aksesibilitas: kontras (minimal 4.5:1), focus ring, label programatik, alt text,
-- state UI penting: loading, kosong, gagal.
-Setiap modul termasuk Design System wajib punya minimal 2 acceptanceCriteria, dan SALAH SATUNYA wajib menguji ALUR GAGAL atau edge case. Kriteria bahagia saja tidak cukup.
-Untuk setiap modul, tulis kriteria gagal dengan pola "… <kondisi buruk> … <hasil yang diharapkan>", contoh nyata: "Akses halaman admin oleh petugas biasa ditolak dengan 403 dan tidak menampilkan data apa pun.", "Nomor surat duplikat ditolak dengan 409 dan pesan kesalahan yang jelas.", "Proses gagal start bila SESSION_SECRET kosong."
-Setiap modul juga WAJIB mengisi edgeCases dengan minimal satu kasus gagal nyata (bukan array kosong).
-Untuk CLI/bot/library tanpa antarmuka, modul ini DILARANG ada. Jangan menulis nama modul lain di luar daftar yang sudah ditetapkan.
-
-Jangan menulis field lain. Jangan berhenti sebelum JSON ditutup.
+Untuk CLI/bot statis/library yang memang tanpa data atau API, tulis "Tidak berlaku (tanpa antarmuka)" dan biarkan array kosong. Jangan menulis kunci lain. Jangan berhenti sebelum JSON ditutup. Keluaran terpotong = gagal.
 `;
-
 // Tahap 2 dari generate 2-tahap: terima skeleton tahap 1, keluarkan HANYA tasks.
 const PRD_TASKS_SYSTEM_PROMPT = `
 Kamu adalah Lead Engineer. Tugasmu: dari kerangka PRD (JSON) + ide + klarifikasi di bawah, susun daftar task eksekusi untuk AI Coding Agent. Keluarkan HANYA {"tasks": [...]}.
@@ -938,10 +937,12 @@ async function callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, atte
       { role: 'user', content: userPrompt }
     ],
     temperature: 0.2,
-    // Tanpa batas eksplisit, router memotong keluaran sendiri di tengah
-    // JSON (selamat: "menangani tig"), lalu validator melapor field hilang
-    // seolah model salah. Batas longgar + deteksi finish_reason di bawah.
-    max_tokens: 16000
+    // 7000 token, bukan 16000. Terukur pada prompt nyata (3 percobaan tiap
+    // nilai): 3000 dan 5000 SELALU terpotong, 6000 hanya 1/3 berhasil, 7000
+    // berhasil 3/3, sedangkan 8000-32000 dijawab router dengan 502 dan badan
+    // kosong. Batas eksplisit tetap perlu supaya router tidak memotong
+    // diam-diam, tapi nilai besar justru mematikan panggilan.
+    max_tokens: 7000
   };
   // Minta JSON mode bila mendukung. Model gratis yang tidak mendukungnya
   // diulang sekali tanpa field ini, lalu tetap divalidasi secara lokal.
@@ -1099,10 +1100,11 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
   }
 
   async function generateSkeleton() {
-    // Tiga panggilan fokus: identitas, stack+arsitektur, fitur+DB+API.
+    // Empat panggilan fokus: identitas, stack+arsitektur, fitur, skema+API.
     // Dipisah karena model gratis self-stop setelah ~2 kunci saat diminta semua
-    // field sekaligus, dan 502 kalau prompt-nya dipangkas satu blok.
-    console.log(`[AI-PRD] Tahap 1a/3 identitas via ${chosenModel}...`);
+    // field sekaligus, gabungan fitur+skema terpotong di plafon token, dan 502
+    // kalau max_tokens dinaikkan di atas ~8000.
+    console.log(`[AI-PRD] Tahap 1a/4 identitas via ${chosenModel}...`);
     const identity = normalizePRDFields(await callStage(
       'identitas',
       PRD_IDENTITY_SYSTEM_PROMPT,
@@ -1118,7 +1120,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     const decidedText = '\nKeputusan produk yang sudah ditetapkan (jangan mengulang field ini):\n' +
       JSON.stringify(decided) + '\n';
 
-    console.log(`[AI-PRD] Tahap 1b/3 stack & arsitektur via ${chosenModel}...`);
+    console.log(`[AI-PRD] Tahap 1b/4 stack & arsitektur via ${chosenModel}...`);
     const core = normalizePRDFields(await callStage(
       'stack & arsitektur',
       // Kontrak desain + referensi arah hanya sekali, di panggilan yang menulis
@@ -1128,19 +1130,34 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       ['techStack', 'architectureOverview']
     ));
 
-    console.log(`[AI-PRD] Tahap 1c/3 fitur, DB & API via ${chosenModel}...`);
-    const detail = normalizePRDFields(await callStage(
-      'rincian',
-      // Modul Design System dituntut validator pada features, jadi syaratnya
-      // harus ada di prompt yang MENULIS features. Sebelumnya kontrak desain
-      // hanya dikirim ke tahap arsitektur, sehingga model tidak pernah tahu
-      // modul itu wajib dan PRD selalu ditolak.
-      PRD_DETAIL_SYSTEM_PROMPT + '\n' + getDesignSystemRequirement(),
+    // Fitur dan skema/endpoint dipanggil TERPISAH. Gabungan ketiganya kadang
+    // butuh >7000 completion token dan terpotong, sedangkan plafon di atas
+    // 8000 membuat router menjawab 502 (terukur: features ~2400 token,
+    // db+api ~4300 token, gabungan 5400-7000+ token).
+    console.log(`[AI-PRD] Tahap 1c/4 fitur via ${chosenModel}...`);
+    // Modul Design System dituntut validator pada features, jadi syaratnya
+    // harus ada di prompt yang MENULIS features.
+    const features = normalizePRDFields(await callStage(
+      'fitur',
+      PRD_FEATURES_SYSTEM_PROMPT + '\n' + getDesignSystemRequirement(),
       userPrompt + decidedText +
       `\nStack yang ditetapkan (techStack): ${JSON.stringify(core.techStack)}\n` +
-      'Susun features, databaseSchema, dan apiEndpoints sekarang.',
-      ['features', 'databaseSchema', 'apiEndpoints']
+      'Susun features sekarang.',
+      ['features']
     ));
+
+    console.log(`[AI-PRD] Tahap 1d/4 skema data & API via ${chosenModel}...`);
+    const schema = normalizePRDFields(await callStage(
+      'skema data & API',
+      PRD_DB_API_SYSTEM_PROMPT,
+      userPrompt + decidedText +
+      `\nStack yang ditetapkan (techStack): ${JSON.stringify(core.techStack)}\n` +
+      `Daftar modul fitur (skema dan endpoint harus mendukung semua modul ini): ${JSON.stringify((features.features || []).map(f => f && f.module))}\n` +
+      'Susun databaseSchema dan apiEndpoints sekarang.',
+      ['databaseSchema', 'apiEndpoints']
+    ));
+
+    const detail = { ...features, ...schema };
 
     let skeleton = { ...identity, ...core, ...detail };
     let problems = validatePRD(skeleton, 'skeleton');
@@ -1182,28 +1199,47 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
 
       let detailFixed = detail;
       if (detailProblems.length) {
-        const fixed = await callWithTruncationRetry(
-          PRD_DETAIL_SYSTEM_PROMPT + '\n' + getDesignSystemRequirement(),
-          userPrompt + decidedText +
-          `\nStack yang ditetapkan: ${JSON.stringify(prose.techStack)}\n` +
-          `Perbaiki rincian berikut. Jangan mengubah identitas atau arsitektur.\n` +
-          `Masalah: ${detailProblems.join('; ')}`
-        );
-        const candidate = { ...detail, ...fixed };
-        // Gabungan bisa menghasilkan campuran dua skema: kalau model menjawab
-        // dengan field lain (description/files/acceptanceCriteria) alih-alih
-        // "spec", maka "fixed" tidak punya spec sama sekali. Terukur: 11 task
-        // masuk tanpa spec dan PRD ditolak meski percobaan pertama benar.
-        const usable = Array.isArray(candidate.features)
-          && candidate.features.length
-          && candidate.features.every(f => f && typeof f.module === 'string' && f.module.trim())
-          && (!Array.isArray(fixed?.features) || !Array.isArray(detail?.features)
-              || fixed.features.length >= detail.features.length);
-        if (usable && problemsFor({ ...identity, ...core, ...candidate }) < problemsFor({ ...identity, ...core, ...detail })) {
-          detailFixed = candidate;
-        } else {
-          console.warn('[AI-PRD] Perbaikan rincian tidak memperbaiki; memakai hasil pertama.');
+        // Perbaikan diarahkan ke panggilan yang MENULIS bagian bermasalah:
+        // masalah fitur ke prompt fitur, masalah skema/endpoint ke prompt
+        // skema. Regenerasi gabungan dulu sering terpotong di plafon token.
+        const featureProblems = detailProblems.filter(p => /fitur|Design System/i.test(p));
+        const schemaProblems = detailProblems.filter(p => !featureProblems.includes(p));
+
+        let candidate = { ...detail };
+        if (featureProblems.length) {
+          const fixedF = normalizePRDFields(await callWithTruncationRetry(
+            PRD_FEATURES_SYSTEM_PROMPT + '\n' + getDesignSystemRequirement(),
+            userPrompt + decidedText +
+            `\nStack yang ditetapkan: ${JSON.stringify(prose.techStack)}\n` +
+            `Perbaiki features berikut. Jangan mengubah identitas, arsitektur, skema, atau endpoint.\n` +
+            `Masalah: ${featureProblems.join('; ')}`
+          ));
+          // Hasil perbaikan bisa LEBIH BURUK (fitur tanpa nama modul). Hanya
+          // dipakai kalau benar-benar mengurangi jumlah masalah.
+          const usable = Array.isArray(fixedF.features) && fixedF.features.length
+            && fixedF.features.every(f => f && typeof f.module === 'string' && f.module.trim());
+          if (usable && problemsFor({ ...identity, ...core, ...candidate, ...fixedF }) < problemsFor({ ...identity, ...core, ...candidate })) {
+            candidate = { ...candidate, ...fixedF };
+          } else {
+            console.warn('[AI-PRD] Perbaikan fitur tidak memperbaiki; memakai hasil pertama.');
+          }
         }
+        if (schemaProblems.length) {
+          const fixedS = normalizePRDFields(await callWithTruncationRetry(
+            PRD_DB_API_SYSTEM_PROMPT,
+            userPrompt + decidedText +
+            `\nStack yang ditetapkan: ${JSON.stringify(prose.techStack)}\n` +
+            `Daftar modul fitur: ${JSON.stringify((candidate.features || []).map(f => f && f.module))}\n` +
+            `Perbaiki databaseSchema dan apiEndpoints berikut. Jangan mengubah fitur.\n` +
+            `Masalah: ${schemaProblems.join('; ')}`
+          ));
+          if (problemsFor({ ...identity, ...core, ...candidate, ...fixedS }) < problemsFor({ ...identity, ...core, ...candidate })) {
+            candidate = { ...candidate, ...fixedS };
+          } else {
+            console.warn('[AI-PRD] Perbaikan skema tidak memperbaiki; memakai hasil pertama.');
+          }
+        }
+        detailFixed = candidate;
       }
       skeleton = { ...identity, ...prose, ...detailFixed };
       problems = validatePRD(skeleton, 'skeleton');
