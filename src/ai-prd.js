@@ -328,14 +328,23 @@ export function normalizePRDFields(prd) {
     out.features = out.features.map((f) => {
       if (!f || typeof f !== 'object') return f;
       const module = f.module || f.name || f.title || f.modul;
-      return module ? { ...f, module } : f;
+      // Model juga menyingkat nama kunci: "acceptance" alih-alih
+      // "acceptanceCriteria". Tanpa ini fitur yang isinya lengkap dianggap
+      // tidak punya kriteria dan PRD ditolak.
+      const criteria = f.acceptanceCriteria || f.acceptance || f.criteria;
+      const next = module ? { ...f, module } : { ...f };
+      if (!next.acceptanceCriteria && Array.isArray(criteria)) next.acceptanceCriteria = criteria;
+      return next;
     });
   }
   if (Array.isArray(out.tasks)) {
     out.tasks = out.tasks.map((t) => {
       if (!t || typeof t !== 'object') return t;
       const module = t.module || t.name || t.modul;
-      return module && !t.module ? { ...t, module } : t;
+      const next = module && !t.module ? { ...t, module } : { ...t };
+      // Task butuh field "spec"; model kadang memakai "description".
+      if (!String(next.spec || '').trim() && typeof next.description === 'string') next.spec = next.description;
+      return next;
     });
   }
   return out;

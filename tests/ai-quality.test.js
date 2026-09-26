@@ -118,6 +118,23 @@ try {
     assert.match(calls[3].body.messages[0].content, /(?:CLI|bot|API|library).*(?:tanpa UI|tanpa antarmuka)/iu);
   });
 
+  await test('abbreviated model field names are mapped, real values are not overwritten', () => {
+    // Regresi nyata: fitur memakai "acceptance" alih-alih "acceptanceCriteria",
+    // sehingga 7 fitur yang isinya lengkap dianggap tanpa kriteria.
+    const f = normalizePRDFields({ features: [{ id: 'x', name: 'Autentikasi', description: 'd', acceptance: ['gagal 401', 'ok'] }] });
+    assert.equal(f.features[0].module, 'Autentikasi');
+    assert.deepEqual(f.features[0].acceptanceCriteria, ['gagal 401', 'ok']);
+    // Task memakai "description" alih-alih "spec".
+    const t = normalizePRDFields({ tasks: [{ id: 'TASK-01', name: 'Auth', description: 'Kerjakan X.' }] });
+    assert.equal(t.tasks[0].module, 'Auth');
+    assert.equal(t.tasks[0].spec, 'Kerjakan X.');
+    // Nilai yang sudah benar tidak ditimpa.
+    const kept = normalizePRDFields({ features: [{ module: 'A', acceptanceCriteria: ['x', 'y'], acceptance: ['z'] }] });
+    assert.deepEqual(kept.features[0].acceptanceCriteria, ['x', 'y']);
+    const keptTask = normalizePRDFields({ tasks: [{ id: 'T1', module: 'A', spec: 'asli', description: 'lain' }] });
+    assert.equal(keptTask.tasks[0].spec, 'asli');
+  });
+
   await test('extractJSON takes the first balanced object, not first-brace-to-last', () => {
     // Regresi nyata: model mengeluarkan dua objek JSON berurutan, dan potongan
     // "{" pertama sampai "}" terakhir menyeberangi keduanya lalu gagal parse.
