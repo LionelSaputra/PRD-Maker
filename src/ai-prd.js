@@ -999,15 +999,27 @@ async function callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, atte
       console.warn('[AI] Model tidak mendukung JSON mode, mengulang tanpa response_format...');
       return await callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt, busyIdx, true);
     }
-    // Error sementara dari penyedia (502/504/timeout upstream): tunggu lalu
-    // coba lagi. Free model sering 502 beruntun saat dua panggilan besar
-    // beruntun, jadi tiga percobaan dengan jeda memanjang.
-    // ponytail: turunkan ke 1x retry setelah model target stabil <1%.
-    if (attempt <= 3 && ([500, 502, 503, 504].includes(res.status) || /connect timeout|Timeout|ETIMEDOUT/i.test(rawText))) {
-      const backoffMs = 3000 * attempt;
-      console.warn(`[AI] Router HTTP ${res.status} (sementara), mengulang ${attempt}/3 setelah jeda...`);
-      await new Promise(r => setTimeout(r, backoffMs));
-      return await callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt + 1, busyIdx, omitJsonMode);
+    // Dua jenis kegagalan sementara, ditangani berbeda:
+    // (a) Timeout upstream ("connect timeout"/"reset after 249s"): request-nya
+    //     sendiri terlalu lambat, mengulang identik hampir pasti menggantung
+    //     lagi -> cukup 2 percobaan, jeda pendek.
+    // (b) 5xx transien (503/502 badan kosong, provider_request_failed): router
+    //     down sesaat. Skeleton yang sudah valid (5 tahap, ~90 dtk kerja) tidak
+    //     boleh dibuang hanya karena tahap terakhir kena blip beberapa detik,
+    //     jadi tunggu lebih sabar dengan ladder. Terukur: blip tasks luna pulih
+    //     dalam <60 dtk.
+    // Skala jeda bisa dikecilkan untuk test (PRDMAKER_BACKOFF_SCALE).
+    const upstreamTimeout = /connect timeout|reset after|Timeout|ETIMEDOUT/i.test(rawText);
+    const transient5xx = [500, 502, 503, 504].includes(res.status);
+    if (upstreamTimeout || transient5xx) {
+      const scale = Number(process.env.PRDMAKER_BACKOFF_SCALE) || 1;
+      const maxAttempts = upstreamTimeout ? 2 : 5;
+      const backoffMs = Math.round((upstreamTimeout ? 4000 * attempt : [5000, 15000, 30000, 45000, 60000][attempt - 1]) * scale);
+      if (attempt <= maxAttempts) {
+        console.warn(`[AI] Router HTTP ${res.status} (${upstreamTimeout ? 'timeout upstream' : 'sementara'}), mengulang ${attempt}/${maxAttempts} setelah jeda...`);
+        await new Promise(r => setTimeout(r, backoffMs));
+        return await callRouter(routerCfg, chosenModel, systemPrompt, userPrompt, attempt + 1, busyIdx, omitJsonMode);
+      }
     }
     // Antrean penuh (limit 1 request bersamaan per key): ini BUKAN kegagalan,
     // hanya slot sibuk. Satu key dipakai beberapa klien (UI, CLI, live test),

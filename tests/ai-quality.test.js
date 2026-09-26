@@ -81,6 +81,9 @@ const schemaOf = (s) => [dbOf(s), apiOf(s)];
 const coreText = (value) => JSON.stringify(value).toLowerCase();
 
 try {
+  // Retry 5xx kini menunggu 5-60 dtk per percobaan (supaya blip router tidak
+  // membuang skeleton valid). Kecilkan skala jeda saat test agar suite tetap cepat.
+  process.env.PRDMAKER_BACKOFF_SCALE = '0.005';
   await test('model discovery trusts provider list and admits advertised Astra', async () => {
     process.env.PRDMAKER_API_KEY = 'offline-test-key';
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
@@ -451,6 +454,47 @@ try {
     const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], '');
     assert.equal(result.tasks.length, uiTasks.length);
     assert.ok(result.features.length > 0);
+  });
+
+  await test('a transient 503 at the tasks stage recovers without rewriting the valid skeleton', async () => {
+    process.env.PRDMAKER_API_KEY = 'offline-test-key';
+    process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
+    process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
+    process.env.PRDMAKER_CONFIG = '/does/not/exist';
+    // Regresi nyata: blip 503 sesaat di tahap terakhir dulu membuang skeleton
+    // yang sudah benar (5 tahap, ~90 dtk kerja) karena retry hanya 3x/18 dtk.
+    // Sekarang 503 transien ditunggu lebih sabar, dan skeleton tidak ditulis ulang.
+    const calls = [];
+    let taskAttempts = 0;
+    globalThis.fetch = async (url, options = {}) => {
+      if (url.endsWith('/models')) return new Response(JSON.stringify({ data: [{ id: 'oa/gpt-6-astra' }] }), { status: 200 });
+      const body = JSON.parse(options.body);
+      calls.push(body);
+      const prompt = body.messages[0].content;
+      // Routing berbasis penanda SYSTEM prompt yang unik per tahap (pola yang
+      // sama dengan test lain). 'Lead Engineer' ambigu (tahap core juga
+      // memakainya), jadi tasks dikenali dari 'dari kerangka PRD'.
+      if (prompt.includes('dari kerangka PRD')) {
+        taskAttempts++;
+        // Dua blip 503, lalu pulih.
+        if (taskAttempts <= 2) return new Response(JSON.stringify({ error: { code: 'provider_request_failed', message: 'SECRET' } }), { status: 503 });
+        return completion({ tasks: uiTasks });
+      }
+      if (prompt.includes('apiEndpoints')) return completion(apiOf(uiSkeleton));
+      if (prompt.includes('databaseSchema')) return completion(dbOf(uiSkeleton));
+      if (prompt.includes('"features"')) return completion(featuresOf(uiSkeleton));
+      if (prompt.includes('architectureOverview')) return completion(coreOf(uiSkeleton));
+      return completion(identityOf(uiSkeleton));
+    };
+    const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
+    assert.equal(result.tasks.length, uiTasks.length);
+    // Detail rahasia upstream tidak boleh bocor ke pengguna.
+    // Skeleton hanya ditulis SEKALI per tahap meski tasks gagal 2x.
+    const stageCount = (re) => calls.filter(c => re.test(c.messages[0].content)).length;
+    assert.equal(stageCount(/Tulis identitas produk/), 1, 'identitas tidak boleh diulang');
+    assert.equal(stageCount(/databaseSchema/), 1, 'skema data tidak boleh diulang');
+    assert.equal(stageCount(/apiEndpoints/), 1, 'kontrak API tidak boleh diulang');
+    assert.ok(taskAttempts >= 3, 'tasks harus di-retry sampai pulih, tercatat: ' + taskAttempts);
   });
 
   await test('Default model: when every model in the chain fails, the user gets a friendly message, not raw provider text', async () => {
