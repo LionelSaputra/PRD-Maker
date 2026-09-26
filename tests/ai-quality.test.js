@@ -22,6 +22,8 @@ import {
   stripForeignFragments,
   validatePRD
 } from '../src/ai-prd.js';
+import { screenKind, productKind } from '../src/preview-screens.js';
+import { buildPreviewHtml } from '../src/preview.js';
 import { skeleton as uiSkeleton, tasks as uiTasks, clarification } from './fixtures/prd.js';
 
 const originalFetch = globalThis.fetch;
@@ -395,20 +397,27 @@ try {
       const body = JSON.parse(options.body);
       calls.push(body);
       const prompt = body.messages[0].content;
-      if (prompt.includes('"projectName"')) return completion(identityOf(uiSkeleton));
-      if (prompt.includes('architectureOverview')) return completion(coreOf(uiSkeleton));
+      // Routing memakai penanda system prompt yang benar-benar unik per tahap.
+      // (Kontrak desain menyebut projectName/architectureOverview di banyak
+      // tahap, jadi mencocokkan nama kunci membuat tahap tertukar.)
+      if (prompt.includes('dari kerangka PRD')) {
+        // tasks: model pertama menjawab kosong, cadangan menjawab benar.
+        return body.model === 'oa/gpt-6-astra' ? completion({ tasks: [] }) : completion({ tasks: uiTasks });
+      }
+      if (prompt.includes('Head of Product. Tulis identitas')) return completion(identityOf(uiSkeleton));
+      if (prompt.includes('Lead Engineer. Bahasa Indonesia tegas')) return completion(coreOf(uiSkeleton));
+      if (prompt.includes('menulis kontrak API')) return completion(apiOf(uiSkeleton));
+      if (prompt.includes('menulis skema data')) return completion(dbOf(uiSkeleton));
       if (prompt.includes('"features"')) return completion(featuresOf(uiSkeleton));
-      if (prompt.includes('apiEndpoints')) return completion(apiOf(uiSkeleton));
-      if (prompt.includes('databaseSchema')) return completion(dbOf(uiSkeleton));
-      // tasks: model pertama menjawab kosong, cadangan menjawab benar.
-      if (body.model === 'oa/gpt-6-astra') return completion({ tasks: [] });
-      return completion({ tasks: uiTasks });
+      return completion(identityOf(uiSkeleton));
     };
     const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], '');
     assert.equal(result.tasks.length, uiTasks.length);
-    // Tahap 1 hanya ditulis sekali (4 panggilan) meski dua model dipakai.
-    const stageOneCalls = calls.filter(c => /"projectName"|"features"|databaseSchema/.test(c.messages[0].content));
-    assert.equal(stageOneCalls.length, 3, 'identitas+fitur+skema harus sekali saja: ' + stageOneCalls.length);
+    // Tahap 1 hanya ditulis sekali meski dua model dipakai. Dihitung dari
+    // penanda kunci tiap tahap (bukan "databaseSchema", yang kini juga muncul
+    // di prompt tasks lewat kontrak desain).
+    const stageOneCalls = calls.filter(c => /Head of Product\. Tulis identitas|Lead Engineer\. Bahasa Indonesia tegas|menulis skema data|menulis kontrak API|"features"/.test(c.messages[0].content));
+    assert.equal(stageOneCalls.length, 5, '5 tahap skeleton harus sekali saja: ' + stageOneCalls.length);
     // Penanda unik prompt tasks: prompt inti teknis juga menyebut "Lead Engineer".
     // tasks boleh di-retry internal, yang penting KEDUA model mencobanya dan
     // kerangka tidak pernah ditulis ulang.
@@ -454,11 +463,11 @@ try {
       const body = JSON.parse(options.body);
       calls.push(body);
       const prompt = body.messages[0].content;
-      if (prompt.includes('apiEndpoints')) return completion(apiOf(uiSkeleton));
-      if (prompt.includes('databaseSchema')) return completion(dbOf(uiSkeleton));
-      if (prompt.includes('"features"')) return completion(phase === 'weak' ? weakFeatures : featuresOf(uiSkeleton));
-      if (prompt.includes('architectureOverview')) return completion(coreOf(uiSkeleton));
       if (prompt.includes('dari kerangka PRD')) return completion({ tasks: uiTasks });
+      if (prompt.includes('menulis kontrak API')) return completion(apiOf(uiSkeleton));
+      if (prompt.includes('menulis skema data')) return completion(dbOf(uiSkeleton));
+      if (prompt.includes('"features"')) return completion(phase === 'weak' ? weakFeatures : featuresOf(uiSkeleton));
+      if (prompt.includes('Lead Engineer. Bahasa Indonesia tegas')) return completion(coreOf(uiSkeleton));
       return completion(identityOf(uiSkeleton));
     };
     // Percobaan 1: fitur lemah -> validator menolak kerangka -> gagal.
@@ -490,11 +499,11 @@ try {
       if (mode === 'kill-after-core' && prompt.includes('"features"')) {
         return new Response(JSON.stringify({ error: 'down' }), { status: 502 });
       }
-      if (prompt.includes('apiEndpoints')) return completion(apiOf(uiSkeleton));
-      if (prompt.includes('databaseSchema')) return completion(dbOf(uiSkeleton));
-      if (prompt.includes('"features"')) return completion(featuresOf(uiSkeleton));
-      if (prompt.includes('architectureOverview')) return completion(coreOf(uiSkeleton));
       if (prompt.includes('dari kerangka PRD')) return completion({ tasks: uiTasks });
+      if (prompt.includes('menulis kontrak API')) return completion(apiOf(uiSkeleton));
+      if (prompt.includes('menulis skema data')) return completion(dbOf(uiSkeleton));
+      if (prompt.includes('"features"')) return completion(featuresOf(uiSkeleton));
+      if (prompt.includes('Lead Engineer. Bahasa Indonesia tegas')) return completion(coreOf(uiSkeleton));
       return completion(identityOf(uiSkeleton));
     };
     globalThis.fetch = fetcher;
@@ -517,6 +526,50 @@ try {
     const result3 = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
     assert.equal(result3.tasks.length, uiTasks.length);
     assert.equal(calls.length, 0, 'PRD lengkap dari cache tidak boleh memanggil router');
+  });
+
+  await test('preview picks a screen shape from the module domain, not one generic card', async () => {
+    assert.equal(screenKind('Pencatatan Presensi Kelas'), 'entry');
+    assert.equal(screenKind('Rekapitulasi & Laporan Bulanan'), 'report');
+    assert.equal(screenKind('Pencarian Surat'), 'search');
+    assert.equal(screenKind('Autentikasi & Manajemen Sesi'), 'auth');
+    assert.equal(screenKind('Manajemen Data Master & Siswa'), 'table');
+    assert.equal(screenKind('Design System'), 'tokens');
+    // Bagian situs profil tidak boleh dirender sebagai tabel dashboard.
+    assert.equal(screenKind('Hero & Profil'), 'content');
+    assert.equal(screenKind('Pengalaman Magang & Kerja'), 'content');
+    assert.equal(screenKind('SEO & Metadata'), 'ops');
+
+    // Jenis produk: prosa yang menentukan, bukan nama modul (modul "Hero
+    // Browser" di aplikasi draft dulu salah membuat produk jadi 'showcase').
+    assert.equal(productKind({ features: [{ module: 'Hero Browser & Meta Board' }, { module: 'Admin Review Console' }], summary: 'Aplikasi draft game untuk analis.', architecture: 'Node + SQLite.' }), 'app');
+    assert.equal(productKind({ features: [{ module: 'Hero & Profil' }], summary: 'Situs portofolio pribadi.', architecture: 'Astro.' }), 'showcase');
+    assert.equal(productKind({ features: [{ module: 'Impor CSV' }], summary: 'CLI untuk impor data tanpa antarmuka.', architecture: 'Node.' }), 'nonui');
+  });
+
+  await test('preview builds a real screen per module from the PRD data', async () => {
+    const ws = { id: 'ws_x', name: 'Absensi SMK', summary: 'Aplikasi absensi siswa.', architecture: 'Node + SQLite.' };
+    const features = [
+      { module: 'Pencatatan Presensi Kelas', description: 'Guru mencatat kehadiran satu kelas per tanggal.', acceptanceCriteria: ['Tersimpan dalam satu transaksi', 'Ganda ditolak'], edgeCases: ['Koneksi putus saat simpan'] },
+      { module: 'Rekapitulasi & Laporan Bulanan', description: 'Wali kelas melihat rekap bulanan.', acceptanceCriteria: ['Rekap cocok dengan data sumber'], edgeCases: [] },
+      { module: 'Design System', description: 'Token warna terang #0f172a dan aksen #2563eb.', acceptanceCriteria: ['Kontras minimal 4.5:1'], edgeCases: [] }
+    ];
+    const html = buildPreviewHtml(ws, features, [], {
+      databaseSchema: [{ table: 'presensi', fields: ['id TEXT PRIMARY KEY', 'siswa TEXT NOT NULL', 'tanggal TEXT NOT NULL', 'status TEXT NOT NULL'] }],
+      apiEndpoints: [{ method: 'GET', path: '/api/v1/presensi', description: 'Daftar presensi' }]
+    });
+    // Satu layar per modul, bukan satu kartu generik.
+    assert.equal((html.match(/class="app-window"/g) || []).length, features.length);
+    // Kolom diambil dari skema PRD, bukan daftar tetap.
+    assert.ok(html.includes('siswa'), 'kolom tabel PRD harus muncul di layar');
+    assert.ok(html.includes('tanggal'));
+    // Aksi utama khusus domain, bukan "Tombol Utama" generik di semua layar.
+    assert.ok(/Simpan Pencatatan/i.test(html), 'tombol layar entri harus menyebut domain');
+    assert.ok(!/Tombol Utama/.test(html), 'jangan pakai label tombol generik');
+    // Keadaan & aksesibilitas wajib.
+    assert.ok(html.includes('prefers-reduced-motion'));
+    assert.ok(html.includes('class="vh"'));
+    assert.ok(!/lorem ipsum/i.test(html));
   });
 
   await test('an explicitly chosen model is pinned: no fallback chain', async () => {
@@ -552,12 +605,12 @@ try {
       const prompt = body.messages[0].content;
       const chosenFirst = body.model === 'oa/gpt-6-astra';
       if (chosenFirst) return new Response(JSON.stringify({ error: 'down' }), { status: 500 });
-      if (prompt.includes('apiEndpoints')) return completion(apiOf(uiSkeleton));
-      if (prompt.includes('databaseSchema')) return completion(dbOf(uiSkeleton));
-      if (prompt.includes('tepat dua kunci')) return completion(coreOf(uiSkeleton));
+      if (prompt.includes('dari kerangka PRD')) return completion({ tasks: uiTasks });
+      if (prompt.includes('menulis kontrak API')) return completion(apiOf(uiSkeleton));
+      if (prompt.includes('menulis skema data')) return completion(dbOf(uiSkeleton));
+      if (prompt.includes('Lead Engineer. Bahasa Indonesia tegas')) return completion(coreOf(uiSkeleton));
       if (prompt.includes('"features"')) return completion(featuresOf(uiSkeleton));
-      if (prompt.includes('"projectName"')) return completion(identityOf(uiSkeleton));
-      return completion({ tasks: uiTasks });
+      return completion(identityOf(uiSkeleton));
     };
     const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], '');
     assert.equal(result.tasks.length, uiTasks.length);
@@ -588,10 +641,10 @@ try {
         if (taskAttempts <= 2) return new Response(JSON.stringify({ error: { code: 'provider_request_failed', message: 'SECRET' } }), { status: 503 });
         return completion({ tasks: uiTasks });
       }
-      if (prompt.includes('apiEndpoints')) return completion(apiOf(uiSkeleton));
-      if (prompt.includes('databaseSchema')) return completion(dbOf(uiSkeleton));
+      if (prompt.includes('menulis kontrak API')) return completion(apiOf(uiSkeleton));
+      if (prompt.includes('menulis skema data')) return completion(dbOf(uiSkeleton));
       if (prompt.includes('"features"')) return completion(featuresOf(uiSkeleton));
-      if (prompt.includes('architectureOverview')) return completion(coreOf(uiSkeleton));
+      if (prompt.includes('Lead Engineer. Bahasa Indonesia tegas')) return completion(coreOf(uiSkeleton));
       return completion(identityOf(uiSkeleton));
     };
     const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
@@ -600,8 +653,8 @@ try {
     // Skeleton hanya ditulis SEKALI per tahap meski tasks gagal 2x.
     const stageCount = (re) => calls.filter(c => re.test(c.messages[0].content)).length;
     assert.equal(stageCount(/Tulis identitas produk/), 1, 'identitas tidak boleh diulang');
-    assert.equal(stageCount(/databaseSchema/), 1, 'skema data tidak boleh diulang');
-    assert.equal(stageCount(/apiEndpoints/), 1, 'kontrak API tidak boleh diulang');
+    assert.equal(stageCount(/menulis skema data/), 1, 'skema data tidak boleh diulang');
+    assert.equal(stageCount(/menulis kontrak API/), 1, 'kontrak API tidak boleh diulang');
     assert.ok(taskAttempts >= 3, 'tasks harus di-retry sampai pulih, tercatat: ' + taskAttempts);
   });
 

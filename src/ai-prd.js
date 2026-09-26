@@ -1169,12 +1169,19 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
   // tahap yang cacat membatalkan semua tahap DI BAWAHNYA — tetapi tidak tahap
   // hulu yang sudah benar.
   const STAGE_ORDER = ['identitas', 'stack & arsitektur', 'fitur', 'skema data', 'kontrak API', 'tasks'];
+  // Masalah TASKS tidak boleh membuang tahap 1 sama sekali: skeleton-nya sudah
+  // benar dan justru wajib dipakai ulang. Terukur: tanpa cabang ini, tiap
+  // kegagalan tasks membuang seluruh skeleton dan setiap model cadangan
+  // mengulang 5 tahap dari nol.
   const problemStage = (p) => {
+    if (/task|spec|Dependensi|Verifikasi|Kriteria selesai/i.test(p)) return 'tasks';
     if (/tabel|databaseSchema|fields/i.test(p)) return 'skema data';
     if (/endpoint|apiEndpoints/i.test(p)) return 'kontrak API';
     if (/fitur|Design System|acceptanceCriteria|userStories|modul/i.test(p)) return 'fitur';
     if (/summary|ringkasan|batas lingkup|skala|projectName|tagline/i.test(p)) return 'identitas';
-    return 'stack & arsitektur';
+    // Default jangan pernah membuang tahap 1: kalau tidak jelas milik siapa,
+    // anggap masalah tasks supaya skeleton tetap dipertahankan.
+    return 'tasks';
   };
   function invalidateStages(problems) {
     // Terukur live: fitur ditolak validator (acceptanceCriteria kurang), dan
@@ -1184,7 +1191,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     // dibuang (termasuk dari disk, supaya teks korup tidak dimuat ulang), dan
     // cache tahap perbaikan ikut dibuang karena akan disusun ulang.
     const idx = problems.length
-      ? Math.min(...problems.map(p => { const i = STAGE_ORDER.indexOf(problemStage(p)); return i < 0 ? 0 : i; }))
+      ? Math.min(...problems.map(p => { const i = STAGE_ORDER.indexOf(problemStage(p)); return i < 0 ? STAGE_ORDER.length - 1 : i; }))
       : 0;
     const doomed = new Set(STAGE_ORDER.slice(idx));
     for (const label of [...stageCache.keys()]) {

@@ -33,17 +33,21 @@ const ai = createServer(async (req,res) => {
   const dbOnly = { databaseSchema: skeleton.databaseSchema };
   const apiOnly = { apiEndpoints: skeleton.apiEndpoints };
   // Routing berbasis kunci yang diminta tiap prompt fokus.
+  // Routing memakai penanda system prompt yang unik per tahap. Kontrak desain
+  // menyebut databaseSchema/apiEndpoints/projectName di banyak tahap, jadi
+  // mencocokkan nama kunci membuat tahap tertukar.
   let data;
   if (prompt.includes('Product Manager ramah')) data = clarification;
   else if (prompt.includes('Head of Product & Lead Architect')) data = change;
-  else if (prompt.includes('apiEndpoints')) data = apiOnly;
-  else if (prompt.includes('databaseSchema')) data = dbOnly;
+  else if (prompt.includes('dari kerangka PRD')) data = {tasks};
+  else if (prompt.includes('menulis kontrak API')) data = apiOnly;
+  else if (prompt.includes('menulis skema data')) data = dbOnly;
+  else if (prompt.includes('Head of Product. Tulis identitas')) data = identity;
+  else if (prompt.includes('Lead Engineer. Bahasa Indonesia tegas')) data = core;
   else if (prompt.includes('"features"')) data = featuresOnly;
-  else if (prompt.includes('tepat dua kunci')) data = core;
-  else if (prompt.includes('"projectName"')) data = identity;
   else data = {tasks};
   // Mode invalid-prd membuat validator tahap 2 yang menolak, bukan bentuk tahap 1.
-  const isStageOne = /databaseSchema|apiEndpoints|"features"|tepat dua kunci|"projectName"/.test(prompt);
+  const isStageOne = /menulis kontrak API|menulis skema data|Head of Product\. Tulis identitas|Lead Engineer\. Bahasa Indonesia tegas|"features"/.test(prompt);
   if (mode === 'invalid-prd' && !isStageOne) data = {tasks:[]};
   if (mode === 'invalid-clarify') data = {questions:[null]};
   res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(data)}}]}));
@@ -101,6 +105,13 @@ try {
   assert.equal((await request(path+'/tasks/TASK-01','PATCH',{status:'invalid'})).status,400);
   assert.equal((await request(path)).data.stats.completed,1);
   assert.equal((await fetch(base+path+'/preview',{headers:{Cookie:'session=test'}})).status,200);
+  // Preview harus merender LAYAR per modul (bukan satu kartu generik), memakai
+  // data PRD, dan menegakkan aturan pokok aksesibilitas/motion.
+  const prev=await (await fetch(base+path+'/preview',{headers:{Cookie:'session=test'}})).text();
+  assert.ok(prev.includes('class="app-window"'),'preview harus punya layar per modul');
+  assert.ok(prev.includes('prefers-reduced-motion'),'preview harus menonaktifkan motion saat diminta');
+  assert.ok(prev.includes('class="vh"'),'preview harus punya label teks untuk pembaca layar');
+  assert.ok(!/lorem ipsum/i.test(prev),'preview tidak boleh memakai teks contoh generik');
   // Arah visual: daftar untuk UI, simpan dari form, tolak id ngawur.
   const dirList=await request('/api/v1/design-directions'); assert.equal(dirList.status,200);
   assert.ok(dirList.data.directions.length>=7 && dirList.data.directions.some(d=>d.id==='data-analysis'));
