@@ -40,6 +40,9 @@ function completion(content, finishReason = 'stop') {
 }
 
 function mockQueue(responses, models = [{ id: 'oa/gpt-6-astra' }, { id: 'oa/mimo-v2.6-flash' }]) {
+  // Ratakan: beberapa helper (schemaOf) menyumbang lebih dari satu respons.
+  // Tuple [payload, finishReason] TIDAK diratakan (itu satu respons ber-flag).
+  responses = responses.flatMap(r => (Array.isArray(r) && !(r.length === 2 && typeof r[1] === 'string')) ? r : [r]);
   const calls = [];
   globalThis.fetch = async (url, options = {}) => {
     if (url.endsWith('/models')) {
@@ -64,9 +67,16 @@ function mockQueue(responses, models = [{ id: 'oa/gpt-6-astra' }, { id: 'oa/mimo
 const validUI = { ...uiSkeleton, tasks: uiTasks };
 const identityOf = (s) => ({ projectName: s.projectName, tagline: s.tagline, summary: s.summary });
 const coreOf = (s) => ({ techStack: s.techStack, architectureOverview: s.architectureOverview });
-const detailOf = (s) => ({ features: s.features, databaseSchema: s.databaseSchema, apiEndpoints: s.apiEndpoints });
+// Tahap rinci = 3 panggilan fokus (fitur, skema data, kontrak API). Helper ini
+// menyumbang ketiganya berurutan supaya antrean mock cocok dengan alur nyata.
+const detailOf = (s) => [{ features: s.features }, { databaseSchema: s.databaseSchema }, { apiEndpoints: s.apiEndpoints }];
 const featuresOf = (s) => ({ features: s.features });
-const schemaOf = (s) => ({ databaseSchema: s.databaseSchema, apiEndpoints: s.apiEndpoints });
+const dbOf = (s) => ({ databaseSchema: s.databaseSchema });
+const apiOf = (s) => ({ apiEndpoints: s.apiEndpoints });
+// Tahap skema dipecah DB lalu API (lihat src/ai-prd.js): helper mengembalikan
+// DUA respons berurutan sehingga antrean mock tetap cocok tanpa tiap test
+// menyebut dua entri manual.
+const schemaOf = (s) => [dbOf(s), apiOf(s)];
 
 const coreText = (value) => JSON.stringify(value).toLowerCase();
 
@@ -91,30 +101,35 @@ try {
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
     process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
     process.env.PRDMAKER_CONFIG = '/does/not/exist';
-    mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), detailOf(uiSkeleton), detailOf(uiSkeleton), { tasks: uiTasks }]);
+    mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), detailOf(uiSkeleton), { tasks: uiTasks }]);
     const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [
       { question: 'Pengguna?', answer: 'Lima petugas' }
     ]);
     assert.equal(result.projectName, 'Arsip Surat');
   });
 
-  await test('detail stage is split into features and schema calls capped at 7000 tokens', async () => {
-    // Regresi nyata: gabungan features+db+api butuh 5400-7000+ token dan
-    // terpotong di plafon 7000; max_tokens 8000+ membuat router menjawab 502.
-    // Pemecahan dua panggilan membuat tiap bagian selalu muat (terukur:
-    // features ~2400 token, db+api ~4300 token).
+  await test('detail stage is split into three focused calls capped at 7000 tokens', async () => {
+    // Regresi nyata: gabungan fitur+db+api butuh 5400-7000+ token dan terpotong
+    // di plafon 7000; max_tokens 8000+ membuat router menjawab 502. Skema DB dan
+    // kontrak API juga dipecah jadi dua panggilan: gabungan db+api (~4300 token)
+    // terukur menggantung >249 detik lalu 502 di luna, sedangkan terpisah hanya
+    // 11-112 detik. Jadi rinci = 3 panggilan fokus (fitur, db, api).
     process.env.PRDMAKER_API_KEY = 'offline-test-key';
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
     process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
     process.env.PRDMAKER_CONFIG = '/does/not/exist';
     const calls = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), featuresOf(uiSkeleton), schemaOf(uiSkeleton), { tasks: uiTasks }]);
     await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
-    assert.equal(calls.length, 5);
+    // 6 panggilan: identitas, stack, fitur, skema data, kontrak API, tasks.
+    assert.equal(calls.length, 6);
     assert.ok(calls.every(c => c.body.max_tokens === 7000), 'plafon harus 7000, bukan 16000');
+    // Tiap tahap rinci meminta tepat satu kunci (fitur / databaseSchema / apiEndpoints).
     assert.match(calls[2].body.messages[0].content, /tepat satu kunci/);
-    assert.match(calls[3].body.messages[0].content, /tepat dua kunci/);
-    // Prompt skema menerima daftar modul supaya tabel/endpoint mendukung fitur.
+    assert.match(calls[3].body.messages[0].content, /databaseSchema/);
+    assert.match(calls[4].body.messages[0].content, /apiEndpoints/);
+    // Prompt skema & API menerima daftar modul supaya mendukung fitur.
     assert.match(calls[3].body.messages[1].content, /Daftar modul fitur/);
+    assert.match(calls[4].body.messages[1].content, /Daftar modul fitur/);
   });
 
   await test('two-stage flow uses selected model only and validates before task stage', async () => {
@@ -122,13 +137,13 @@ try {
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
     process.env.PRDMAKER_MODEL = 'oa/gpt-6-astra';
     process.env.PRDMAKER_CONFIG = '/does/not/exist';
-    const calls = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), detailOf(uiSkeleton), detailOf(uiSkeleton), { tasks: uiTasks }]);
+    const calls = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), detailOf(uiSkeleton), { tasks: uiTasks }]);
     const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
     assert.equal(result.tasks.length, uiTasks.length);
     assert.equal(result.projectName, 'Arsip Surat');
     // Tahap 1 dipecah empat panggilan (identitas, stack, fitur, skema); semua
     // tetap model yang dipilih.
-    assert.deepEqual(calls.map(c => c.body.model), ['oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra']);
+    assert.deepEqual(calls.map(c => c.body.model), ['oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra']);
     assert.ok(calls.every(c => c.body.response_format.type === 'json_object'));
     assert.match(calls[0].body.messages[0].content, /projectName/);
     assert.doesNotMatch(calls[0].body.messages[0].content, /apiEndpoints/);
@@ -300,7 +315,7 @@ try {
   await test('the detail stage is told the Design System module is mandatory', async () => {
     // Regresi: syarat modul Design System dulu hanya ada di tahap arsitektur,
     // padahal yang menulis features adalah tahap rincian.
-    const calls = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), detailOf(uiSkeleton), detailOf(uiSkeleton), { tasks: uiTasks }]);
+    const calls = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), detailOf(uiSkeleton), { tasks: uiTasks }]);
     await generatePRDFromPrompt('Dashboard arsip', 'Arsip', [], 'oa/space-bunny-free');
     const detailSystem = calls[2].body.messages[0].content;
     assert.match(detailSystem, /SYARAT MODUL "Design System"/);
@@ -344,7 +359,7 @@ try {
     // Bagian yang tidak dipakai validator tasks tidak boleh ikut terkirim.
     const calls = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), featuresOf(uiSkeleton), schemaOf(uiSkeleton), { tasks: uiTasks }]);
     await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
-    const tasksUser = calls[4].body.messages[1].content;
+    const tasksUser = calls[5].body.messages[1].content;
     // Yang WAJIB ada: nama modul, tabel, dan endpoint untuk coverage task.
     for (const f of uiSkeleton.features) assert.ok(tasksUser.includes(f.module), 'modul harus ada di konteks tasks: ' + f.module);
     for (const t of uiSkeleton.databaseSchema) assert.ok(tasksUser.includes(t.table), 'tabel harus ada: ' + t.table);
@@ -372,7 +387,8 @@ try {
       if (prompt.includes('"projectName"')) return completion(identityOf(uiSkeleton));
       if (prompt.includes('architectureOverview')) return completion(coreOf(uiSkeleton));
       if (prompt.includes('"features"')) return completion(featuresOf(uiSkeleton));
-      if (prompt.includes('databaseSchema')) return completion(schemaOf(uiSkeleton));
+      if (prompt.includes('apiEndpoints')) return completion(apiOf(uiSkeleton));
+      if (prompt.includes('databaseSchema')) return completion(dbOf(uiSkeleton));
       // tasks: model pertama menjawab kosong, cadangan menjawab benar.
       if (body.model === 'oa/gpt-6-astra') return completion({ tasks: [] });
       return completion({ tasks: uiTasks });
@@ -425,7 +441,8 @@ try {
       const prompt = body.messages[0].content;
       const chosenFirst = body.model === 'oa/gpt-6-astra';
       if (chosenFirst) return new Response(JSON.stringify({ error: 'down' }), { status: 500 });
-      if (prompt.includes('databaseSchema')) return completion(schemaOf(uiSkeleton));
+      if (prompt.includes('apiEndpoints')) return completion(apiOf(uiSkeleton));
+      if (prompt.includes('databaseSchema')) return completion(dbOf(uiSkeleton));
       if (prompt.includes('tepat dua kunci')) return completion(coreOf(uiSkeleton));
       if (prompt.includes('"features"')) return completion(featuresOf(uiSkeleton));
       if (prompt.includes('"projectName"')) return completion(identityOf(uiSkeleton));
@@ -475,7 +492,8 @@ try {
     ]);
     const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
     assert.deepEqual(result.features.map(f => f.module), uiSkeleton.features.map(f => f.module));
-    assert.equal(calls.length, 6);
+    // 7 panggilan: identitas, stack, fitur(gagal), fitur(retry), skema data, kontrak API, tasks.
+    assert.equal(calls.length, 7);
     assert.match(calls[3].body.messages[1].content, /Ulangi khusus tahap fitur/);
   });
 
@@ -512,7 +530,8 @@ try {
     ]);
     const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
     assert.equal(result.tasks.length, uiTasks.length);
-    assert.equal(calls.length, 6);
+    // 7 panggilan: identitas, stack, fitur(potong), fitur(retry), db, api, tasks.
+    assert.equal(calls.length, 7);
     assert.match(calls[3].body.messages[1].content, /terpotong/i);
     // Hint pemadatan harus sesuai tahap, bukan menyebut summary di retry tasks.
     assert.match(calls[3].body.messages[1].content, /features 3-6 modul/i);
@@ -534,8 +553,9 @@ try {
     ]);
     const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
     assert.equal(result.tasks.length, uiTasks.length);
-    assert.equal(calls.length, 6);
-    const retry = calls[5].body.messages[1].content;
+    // 7 panggilan: identitas, stack, fitur, db, api, tasks(potong), tasks(retry).
+    assert.equal(calls.length, 7);
+    const retry = calls[6].body.messages[1].content;
     assert.match(retry, /Maksimal 7 task/i);
     assert.match(retry, /terpotong/i);
     assert.doesNotMatch(retry, /architectureOverview maksimal 250 kata/);
@@ -605,7 +625,7 @@ try {
     process.env.PRDMAKER_BASE_URL = 'http://provider.invalid/v1';
     process.env.PRDMAKER_MODEL = 'oa/space-bunny-free';
     process.env.PRDMAKER_CONFIG = '/does/not/exist';
-    const calls = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), detailOf(uiSkeleton), detailOf(uiSkeleton), { tasks: uiTasks }]);
+    const calls = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), detailOf(uiSkeleton), { tasks: uiTasks }]);
     await generatePRDFromPrompt('Dashboard arsip', 'Arsip', [], 'oa/space-bunny-free');
     const system = calls[1].body.messages[0].content;
     assert.equal((system.match(/KONTRAK DESAIN ANTI AI-SLOP/g) || []).length, 1);
@@ -632,7 +652,8 @@ try {
     await generatePRDFromPrompt('Dashboard arsip', 'Arsip', [], 'oa/space-bunny-free', 'data-analysis');
     const stage1 = calls[0].body.messages[1].content;
     const core = calls[1].body.messages[1].content;
-    const stage2 = calls[4].body.messages[0].content;
+    // Tahap tasks kini panggilan ke-6 (0..5): identitas, stack, fitur, db, api, tasks.
+    const stage2 = calls[5].body.messages[0].content;
     assert.match(stage1, /Arah visual WAJIB: Data & Analysis \(id: data-analysis\)/);
     assert.match(stage1, /#0f172a/, 'token HEX arah harus ikut ke prompt tahap 1');
     assert.match(core, /#0f172a/, 'arah visual juga ditegakkan di panggilan inti teknis');
@@ -641,7 +662,7 @@ try {
     assert.ok(!stage2.includes('REFERENSI ARAH VISUAL'));
     assert.equal((stage2.match(/KONTRAK DESAIN ANTI AI-SLOP/g) || []).length, 1);
 
-    const free = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), detailOf(uiSkeleton), detailOf(uiSkeleton), { tasks: uiTasks }]);
+    const free = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), detailOf(uiSkeleton), { tasks: uiTasks }]);
     await generatePRDFromPrompt('Dashboard arsip', 'Arsip', [], 'oa/space-bunny-free');
     assert.match(free[0].body.messages[1].content, /PILIH SENDIRI berdasarkan brief/);
   });
@@ -664,11 +685,13 @@ try {
     ]);
     const result = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
 
-    assert.equal(calls.length, 7);
+    // Urutan nyata 8 panggilan: identitas, stack, fitur(kosong), skema data,
+    // kontrak API, repair-features, tasks(buruk), tasks-retry.
+    assert.equal(calls.length, 8);
     assert.match(calls[0].body.messages[1].content, /projectName, tagline, summary/i);
-    assert.match(calls[4].body.messages[1].content, /Perbaiki features/i);
-    assert.match(calls[5].body.messages[1].content, /tahap 1/iu);
-    assert.match(calls[6].body.messages[1].content, /Perbaiki tasks/i);
+    assert.match(calls[5].body.messages[1].content, /Perbaiki features/i);
+    assert.match(calls[6].body.messages[1].content, /tahap 1/iu);
+    assert.match(calls[7].body.messages[1].content, /Perbaiki tasks/i);
     assert.ok(calls.every(call => call.body.model === 'oa/gpt-6-astra'));
     assert.equal(result.tasks.length, uiTasks.length);
   });
@@ -678,7 +701,7 @@ try {
     const noUI = [...clarification.questions, { question: 'Antarmuka apa?', answer: 'Tanpa antarmuka; CLI saja. Jangan pakai web, browser, login, pembayaran, atau email.' }];
     await generatePRDFromPrompt('CLI impor CSV', 'CLI', noUI, 'oa/gpt-6-astra');
     assert.match(calls[1].body.messages[0].content, /jangan menambahkan frontend, login, atau Design System/i);
-    assert.match(calls[4].body.messages[0].content, /tidak boleh mendapat task frontend, login, atau design system/i);
+    assert.match(calls[5].body.messages[0].content, /tidak boleh mendapat task frontend, login, atau design system/i);
   });
 
   await test('"bukan CLI, bot, atau API tanpa UI" is contrast, not a non-UI claim', () => {
@@ -827,9 +850,9 @@ try {
     delete process.env.PRDMAKER_MODEL;
     process.env.PRDMAKER_CONFIG = config;
     try {
-      const calls = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), detailOf(uiSkeleton), detailOf(uiSkeleton), { tasks: uiTasks }]);
+      const calls = mockQueue([identityOf(uiSkeleton), coreOf(uiSkeleton), detailOf(uiSkeleton), { tasks: uiTasks }]);
       await generatePRDFromPrompt('Arsip surat', 'Arsip Surat');
-      assert.deepEqual(calls.map(call => call.body.model), ['oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra']);
+      assert.deepEqual(calls.map(call => call.body.model), ['oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra', 'oa/gpt-6-astra']);
     } finally {
       fs.rmSync(config, { force: true });
     }

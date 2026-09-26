@@ -645,19 +645,34 @@ Keluarkan HANYA JSON dengan tepat satu kunci:
 3-6 modul fitur. Jangan menulis kunci lain. Jangan berhenti sebelum JSON ditutup. Keluaran terpotong = gagal.
 `;
 
-// Tahap 1d: skema data + kontrak API saja.
-const PRD_DB_API_SYSTEM_PROMPT = `
-Kamu Principal Software Architect yang menulis skema data dan kontrak API. Bahasa Indonesia tegas.
+// Tahap 1d dulu menulis databaseSchema DAN apiEndpoints sekaligus, dan itu
+// titik gagal terukur luna: satu generasi ~4300 token menggantung >249 detik
+// lalu 502. Dipecah jadi dua panggilan fokus (pola yang sama yang membuat
+// pemisahan fitur+skema berhasil), tiap panggilan jauh di bawah cap upstream.
+// Aturan isinya identik, hanya cakupannya dipersempit per panggilan.
+const PRD_DB_SYSTEM_PROMPT = `
+Kamu Principal Software Architect yang menulis skema data. Bahasa Indonesia tegas.
 
-Setiap tabel memiliki fields konkret (tipe, constraint, relasi). Setiap endpoint menyebut input, output, autentikasi/otorisasi dan status error pada description. Nama tabel dan endpoint harus mendukung daftar modul fitur yang diberikan.
+Setiap tabel memiliki fields konkret (tipe, constraint, relasi). Nama tabel harus mendukung daftar modul fitur yang diberikan.
 
-Keluarkan HANYA JSON dengan tepat dua kunci:
+Keluarkan HANYA JSON dengan tepat satu kunci:
 {
-  "databaseSchema": [{ "table": "nama_tabel", "description": "Fungsi tabel", "fields": ["id TEXT PRIMARY KEY", "..."] }],
+  "databaseSchema": [{ "table": "nama_tabel", "description": "Fungsi tabel", "fields": ["id TEXT PRIMARY KEY", "..."] }]
+}
+
+Untuk CLI/bot statis/library yang memang tanpa data, tulis "Tidak berlaku (tanpa antarmuka)" dan biarkan array kosong. Jangan menulis kunci lain. Jangan berhenti sebelum JSON ditutup. Keluaran terpotong = gagal.
+`;
+const PRD_API_SYSTEM_PROMPT = `
+Kamu Principal Software Architect yang menulis kontrak API. Bahasa Indonesia tegas.
+
+Setiap endpoint menyebut input, output, autentikasi/otorisasi dan status error pada description. Path endpoint harus mendukung daftar modul fitur yang diberikan.
+
+Keluarkan HANYA JSON dengan tepat satu kunci:
+{
   "apiEndpoints": [{ "method": "GET | POST | PATCH | DELETE", "path": "/api/v1/...", "description": "Fungsi + siapa boleh akses + status error", "payload": "{ ... }", "response": "{ ... }" }]
 }
 
-Untuk CLI/bot statis/library yang memang tanpa data atau API, tulis "Tidak berlaku (tanpa antarmuka)" dan biarkan array kosong. Jangan menulis kunci lain. Jangan berhenti sebelum JSON ditutup. Keluaran terpotong = gagal.
+Untuk CLI/bot statis/library yang memang tanpa API, tulis "Tidak berlaku (tanpa antarmuka)" dan biarkan array kosong. Jangan menulis kunci lain. Jangan berhenti sebelum JSON ditutup. Keluaran terpotong = gagal.
 `;
 // Tahap 2 dari generate 2-tahap: terima skeleton tahap 1, keluarkan HANYA tasks.
 const PRD_TASKS_SYSTEM_PROMPT = `
@@ -1130,7 +1145,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     // Dipisah karena model gratis self-stop setelah ~2 kunci saat diminta semua
     // field sekaligus, gabungan fitur+skema terpotong di plafon token, dan 502
     // kalau max_tokens dinaikkan di atas ~8000.
-    console.log(`[AI-PRD] Tahap 1a/4 identitas via ${chosenModel}...`);
+    console.log(`[AI-PRD] Tahap 1a/5 identitas via ${chosenModel}...`);
     const identity = normalizePRDFields(await callStage(
       'identitas',
       PRD_IDENTITY_SYSTEM_PROMPT,
@@ -1146,7 +1161,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     const decidedText = '\nKeputusan produk yang sudah ditetapkan (jangan mengulang field ini):\n' +
       JSON.stringify(decided) + '\n';
 
-    console.log(`[AI-PRD] Tahap 1b/4 stack & arsitektur via ${chosenModel}...`);
+    console.log(`[AI-PRD] Tahap 1b/5 stack & arsitektur via ${chosenModel}...`);
     const core = normalizePRDFields(await callStage(
       'stack & arsitektur',
       // Kontrak desain + referensi arah hanya sekali, di panggilan yang menulis
@@ -1160,7 +1175,7 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
     // butuh >7000 completion token dan terpotong, sedangkan plafon di atas
     // 8000 membuat router menjawab 502 (terukur: features ~2400 token,
     // db+api ~4300 token, gabungan 5400-7000+ token).
-    console.log(`[AI-PRD] Tahap 1c/4 fitur via ${chosenModel}...`);
+    console.log(`[AI-PRD] Tahap 1c/5 fitur via ${chosenModel}...`);
     // Modul Design System dituntut validator pada features, jadi syaratnya
     // harus ada di prompt yang MENULIS features.
     const features = normalizePRDFields(await callStage(
@@ -1172,16 +1187,32 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       ['features']
     ));
 
-    console.log(`[AI-PRD] Tahap 1d/4 skema data & API via ${chosenModel}...`);
-    const schema = normalizePRDFields(await callStage(
-      'skema data & API',
-      PRD_DB_API_SYSTEM_PROMPT,
+    // 1d dan 1e terpisah: generasi besar gabungan (DB+API sekaligus) terukur
+    // menggantung >249 detik lalu 502 di luna. Dua panggilan fokus masing-masing
+    // jauh di bawah cap upstream, jadi lebih stabil dan lebih cepat pulih.
+    const modulesText = JSON.stringify((features.features || []).map(f => f && f.module));
+    console.log(`[AI-PRD] Tahap 1d/5 skema data via ${chosenModel}...`);
+    const dbSchema = normalizePRDFields(await callStage(
+      'skema data',
+      PRD_DB_SYSTEM_PROMPT,
       userPrompt + decidedText +
       `\nStack yang ditetapkan (techStack): ${JSON.stringify(core.techStack)}\n` +
-      `Daftar modul fitur (skema dan endpoint harus mendukung semua modul ini): ${JSON.stringify((features.features || []).map(f => f && f.module))}\n` +
-      'Susun databaseSchema dan apiEndpoints sekarang.',
-      ['databaseSchema', 'apiEndpoints']
+      `Daftar modul fitur (tabel harus mendukung semua modul ini): ${modulesText}\n` +
+      'Susun databaseSchema sekarang.',
+      ['databaseSchema']
     ));
+
+    console.log(`[AI-PRD] Tahap 1e/5 kontrak API via ${chosenModel}...`);
+    const apiSchema = normalizePRDFields(await callStage(
+      'kontrak API',
+      PRD_API_SYSTEM_PROMPT,
+      userPrompt + decidedText +
+      `\nStack yang ditetapkan (techStack): ${JSON.stringify(core.techStack)}\n` +
+      `Daftar modul fitur (endpoint harus mendukung semua modul ini): ${modulesText}\n` +
+      'Susun apiEndpoints sekarang.',
+      ['apiEndpoints']
+    ));
+    const schema = { ...dbSchema, ...apiSchema };
 
     const detail = { ...features, ...schema };
 
@@ -1251,18 +1282,43 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
           }
         }
         if (schemaProblems.length) {
-          const fixedS = normalizePRDFields(await callWithTruncationRetry(
-            PRD_DB_API_SYSTEM_PROMPT,
-            userPrompt + decidedText +
-            `\nStack yang ditetapkan: ${JSON.stringify(prose.techStack)}\n` +
-            `Daftar modul fitur: ${JSON.stringify((candidate.features || []).map(f => f && f.module))}\n` +
-            `Perbaiki databaseSchema dan apiEndpoints berikut. Jangan mengubah fitur.\n` +
-            `Masalah: ${schemaProblems.join('; ')}`
-          ));
-          if (problemsFor({ ...identity, ...core, ...candidate, ...fixedS }) < problemsFor({ ...identity, ...core, ...candidate })) {
-            candidate = { ...candidate, ...fixedS };
-          } else {
-            console.warn('[AI-PRD] Perbaikan skema tidak memperbaiki; memakai hasil pertama.');
+          // Perbaikan skema ikut dipecah (DB lalu API) seperti tahap penulisannya:
+          // satu generasi gabungan menggantung >249 detik lalu 502 di luna.
+          // Masalah yang menyebut kedua bagian (mis. "harus array") dikirim ke
+          // dua-duanya; tiap hasil hanya dipakai kalau benar mengurangi masalah.
+          const modulesText = JSON.stringify((candidate.features || []).map(f => f && f.module));
+          const dbProblems = schemaProblems.filter(p => /tabel|databaseSchema/i.test(p));
+          const apiProblems = schemaProblems.filter(p => /endpoint|apiEndpoints/i.test(p));
+          const sharedProblems = schemaProblems.filter(p => !dbProblems.includes(p) && !apiProblems.includes(p));
+          if (dbProblems.length || sharedProblems.length) {
+            const fixedDb = normalizePRDFields(await callWithTruncationRetry(
+              PRD_DB_SYSTEM_PROMPT,
+              userPrompt + decidedText +
+              `\nStack yang ditetapkan: ${JSON.stringify(prose.techStack)}\n` +
+              `Daftar modul fitur: ${modulesText}\n` +
+              `Perbaiki databaseSchema berikut. Jangan mengubah fitur atau endpoint.\n` +
+              `Masalah: ${[...dbProblems, ...sharedProblems].join('; ')}`
+            ));
+            if (problemsFor({ ...identity, ...core, ...candidate, ...fixedDb }) < problemsFor({ ...identity, ...core, ...candidate })) {
+              candidate = { ...candidate, ...fixedDb };
+            } else {
+              console.warn('[AI-PRD] Perbaikan skema data tidak memperbaiki; memakai hasil pertama.');
+            }
+          }
+          if (apiProblems.length || sharedProblems.length) {
+            const fixedApi = normalizePRDFields(await callWithTruncationRetry(
+              PRD_API_SYSTEM_PROMPT,
+              userPrompt + decidedText +
+              `\nStack yang ditetapkan: ${JSON.stringify(prose.techStack)}\n` +
+              `Daftar modul fitur: ${modulesText}\n` +
+              `Perbaiki apiEndpoints berikut. Jangan mengubah fitur atau skema.\n` +
+              `Masalah: ${[...apiProblems, ...sharedProblems].join('; ')}`
+            ));
+            if (problemsFor({ ...identity, ...core, ...candidate, ...fixedApi }) < problemsFor({ ...identity, ...core, ...candidate })) {
+              candidate = { ...candidate, ...fixedApi };
+            } else {
+              console.warn('[AI-PRD] Perbaikan kontrak API tidak memperbaiki; memakai hasil pertama.');
+            }
           }
         }
         detailFixed = candidate;
