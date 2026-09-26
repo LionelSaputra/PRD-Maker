@@ -99,6 +99,55 @@ function sendJson(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
+// Penyimpanan PRD ke DB dipakai dua rute (sync untuk CLI/token, async untuk
+// web UI), jadi logikanya satu fungsi. Mengembalikan payload respons 201.
+function saveWorkspaceFromPRD(prd, body, designDirection) {
+  const wsId = 'ws_' + randomUUID().substring(0, 8);
+  const token = 'tok_' + randomUUID().replace(/-/g, '');
+
+  const insertWs = db.prepare(`
+    INSERT INTO workspaces (id, token, name, tagline, summary, architecture, features_json, db_schema_json, api_endpoints_json, tech_stack, design_direction)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertTask = db.prepare(`
+    INSERT INTO tasks (id, workspace_id, title, spec, status)
+    VALUES (?, ?, ?, ?, 'todo')
+  `);
+
+  const saveWorkspace = db.transaction(() => {
+    insertWs.run(
+      wsId,
+      token,
+      prd.name || prd.projectName || body.name || 'Untitled App',
+      prd.tagline || '',
+      prd.summary || body.idea,
+      prd.architectureOverview || prd.architecture || '',
+      JSON.stringify(prd.features || []),
+      JSON.stringify(prd.databaseSchema || []),
+      JSON.stringify(prd.apiEndpoints || []),
+      JSON.stringify(prd.techStack || []),
+      designDirection || null
+    );
+    const tasks = prd.tasks || [];
+    for (let i = 0; i < tasks.length; i++) {
+      const t = tasks[i];
+      const taskSlug = t.id || `TASK-${String(i + 1).padStart(2, '0')}`;
+      insertTask.run(`${wsId}_${taskSlug}`, wsId, t.title, t.spec);
+    }
+  });
+  saveWorkspace();
+
+  return {
+    workspace: { id: wsId, token, name: prd.name || prd.projectName, summary: prd.summary },
+    totalTasks: (prd.tasks || []).length
+  };
+}
+
+// Job generate asinkron (web UI). In-memory cukup: satu proses, dan job yang
+// hilang saat restart dilaporkan "tidak ditemukan" lalu user menyusun ulang.
+// ponytail: pindah ke tabel DB kalau perlu riwayat job antar-restart.
+const generateJobs = new Map();
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
@@ -195,50 +244,62 @@ const server = http.createServer(async (req, res) => {
         ? body.designDirection
         : undefined;
       const prd = await generatePRDFromPrompt(body.idea, body.name, body.clarifications || [], body.model, designDirection);
-      const wsId = 'ws_' + randomUUID().substring(0, 8);
-      const token = 'tok_' + randomUUID().replace(/-/g, '');
+      const saved = saveWorkspaceFromPRD(prd, body, designDirection);
+      return sendJson(res, 201, saved);
+    }
 
-      const insertWs = db.prepare(`
-        INSERT INTO workspaces (id, token, name, tagline, summary, architecture, features_json, db_schema_json, api_endpoints_json, tech_stack, design_direction)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-
-      const saveWorkspace = db.transaction(() => {
-      insertWs.run(
-        wsId,
-        token,
-        prd.name || prd.projectName || body.name || 'Untitled App',
-        prd.tagline || '',
-        prd.summary || body.idea,
-        prd.architectureOverview || prd.architecture || '',
-        JSON.stringify(prd.features || []),
-        JSON.stringify(prd.databaseSchema || []),
-        JSON.stringify(prd.apiEndpoints || []),
-        JSON.stringify(prd.techStack || []),
-        designDirection || null
-      );
-
-      const insertTask = db.prepare(`
-        INSERT INTO tasks (id, workspace_id, title, spec, status)
-        VALUES (?, ?, ?, ?, 'todo')
-      `);
-
-      const tasks = prd.tasks || [];
-      const insertMany = db.transaction(() => {
-        for (let i = 0; i < tasks.length; i++) {
-          const t = tasks[i];
-          const taskSlug = t.id || `TASK-${String(i + 1).padStart(2, '0')}`;
-          insertTask.run(`${wsId}_${taskSlug}`, wsId, t.title, t.spec);
+    // 2b. POST /api/v1/generate-jobs — generate ASINKRON untuk web UI.
+    // Alasan: generate penuh berjalan 2-15 menit (rantai fallback model).
+    // Lewat browser ada dua pemotong di tengah jalan: proxy_read_timeout
+    // nginx (dulu 60s di /api/) dan batas ~100 detik Cloudflare untuk
+    // respons non-streaming. Keduanya membalas HALAMAN HTML, dan fetch di
+    // frontend gagal dengan "Unexpected token '<'". Dengan job + polling,
+    // setiap request HTTP selesai dalam milidetik sehingga tidak ada yang
+    // bisa timeout; klik ulang juga tidak lagi menumpuk generate yatim
+    // (429 concurrent_limit) karena hanya satu job yang boleh berjalan.
+    if (req.method === 'POST' && url.pathname === '/api/v1/generate-jobs') {
+      if (!await requireSession(req, res)) return;
+      const body = await parseJsonBody(req);
+      if (typeof body.idea !== 'string' || !body.idea.trim() || body.idea.length > 20000) {
+        return sendJson(res, 400, { error: 'Ide wajib berupa teks 1-20000 karakter.' });
+      }
+      if ((body.name != null && (typeof body.name !== 'string' || body.name.length > 160)) || (body.model != null && (typeof body.model !== 'string' || body.model.length > 160))) {
+        return sendJson(res, 400, { error: 'Nama/model tidak valid.' });
+      }
+      if (body.clarifications != null && (!Array.isArray(body.clarifications) || body.clarifications.length > 20 || body.clarifications.some(c => !c || typeof c.question !== 'string' || typeof c.answer !== 'string'))) {
+        return sendJson(res, 400, { error: 'Klarifikasi harus berupa daftar pertanyaan dan jawaban.' });
+      }
+      const running = [...generateJobs.values()].find(j => j.status === 'running');
+      if (running) {
+        return sendJson(res, 409, { error: 'Sudah ada proses penyusunan PRD yang berjalan. Tunggu sampai selesai, lalu coba lagi.' });
+      }
+      const designDirection = typeof body.designDirection === 'string' && DESIGN_DIRECTIONS.some(d => d.id === body.designDirection)
+        ? body.designDirection
+        : undefined;
+      const jobId = 'job_' + randomUUID().substring(0, 8);
+      generateJobs.set(jobId, { status: 'running', startedAt: Date.now() });
+      // Detached dari request: refresh browser tidak membatalkan generate.
+      (async () => {
+        try {
+          const prd = await generatePRDFromPrompt(body.idea, body.name, body.clarifications || [], body.model, designDirection);
+          generateJobs.set(jobId, { status: 'done', workspace: saveWorkspaceFromPRD(prd, body, designDirection) });
+        } catch (err) {
+          generateJobs.set(jobId, { status: 'error', error: err.message });
         }
-      });
-      insertMany();
-      });
-      saveWorkspace();
+        // Job selesai dibersihkan setelah 10 menit supaya Map tidak tumbuh.
+        setTimeout(() => generateJobs.delete(jobId), 600000).unref();
+      })();
+      return sendJson(res, 202, { jobId });
+    }
 
-      return sendJson(res, 201, {
-        workspace: { id: wsId, token, name: prd.name || prd.projectName, summary: prd.summary },
-        totalTasks: prd.tasks.length
-      });
+    // 2c. GET /api/v1/generate-jobs/:id — status job untuk polling.
+    if (req.method === 'GET' && url.pathname.startsWith('/api/v1/generate-jobs/')) {
+      if (!await requireSession(req, res)) return;
+      const job = generateJobs.get(url.pathname.split('/').pop());
+      if (!job) return sendJson(res, 404, { error: 'Job tidak ditemukan atau sudah kedaluwarsa.' });
+      return sendJson(res, 200, job.status === 'running'
+        ? { status: 'running', elapsed: Math.round((Date.now() - job.startedAt) / 1000) }
+        : job);
     }
 
     // 2.5 PATCH /api/v1/workspaces/:id/tasks/:taskId (CLI progress update)
@@ -2157,19 +2218,39 @@ function renderHTML() {
       btn.disabled = true;
 
       try {
-        const res = await fetch('/api/v1/workspaces/generate', {
+        // Generate berjalan sebagai JOB di server + polling status. Request
+        // panjang (2-15 menit) lewat browser diputus nginx/Cloudflare dengan
+        // balasan HTML, yang dulu muncul sebagai "Unexpected token '<'".
+        const res = await fetch('/api/v1/generate-jobs', {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ idea, name, model, designDirection, clarifications })
         });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
+        let data;
+        try { data = await res.json(); } catch { throw new Error('Server membalas halaman non-JSON (status ' + res.status + '). Coba lagi sebentar.'); }
+        if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
 
-        window.location.hash = data.workspace.id;
-        createdWorkspaceTokens[data.workspace.id] = data.workspace.token;
-        loadWorkspace(data.workspace.id);
-        loadHistorySidebar();
+        // Poll tiap 5 detik; teks tombol memberi tahu progres.
+        const started = Date.now();
+        for (;;) {
+          await new Promise(r => setTimeout(r, 5000));
+          const mins = Math.floor((Date.now() - started) / 60000);
+          const secs = Math.floor((Date.now() - started) / 1000) % 60;
+          btn.innerHTML = '<span>Menyusun PRD... ' + (mins > 0 ? mins + 'm ' : '') + secs + 'd</span>';
+          const st = await fetch('/api/v1/generate-jobs/' + data.jobId, { credentials: 'include' });
+          let job;
+          try { job = await st.json(); } catch { continue; } // jaringan sesaat: lanjut poll
+          if (job.status === 'running') continue;
+          if (job.status === 'error') throw new Error(job.error);
+          if (job.status === 'done') {
+            window.location.hash = job.workspace.workspace.id;
+            createdWorkspaceTokens[job.workspace.workspace.id] = job.workspace.workspace.token;
+            loadWorkspace(job.workspace.workspace.id);
+            loadHistorySidebar();
+          }
+          break;
+        }
       } catch (err) {
         alert('Gagal: ' + err.message);
       } finally {
