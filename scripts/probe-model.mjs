@@ -21,9 +21,12 @@ const decidedText = '\nKeputusan produk yang sudah ditetapkan (jangan mengulang 
 const runs = [
   ['identitas', constant('PRD_IDENTITY_SYSTEM_PROMPT'), userBase + '\nTulis identitas produk (projectName, tagline, summary) sekarang.', ['projectName', 'tagline', 'summary']],
   ['inti', constant('PRD_CORE_SYSTEM_PROMPT'), userBase + decidedText + '\nSusun techStack dan architectureOverview sekarang.', ['techStack', 'architectureOverview']],
-  ['rincian', constant('PRD_DETAIL_SYSTEM_PROMPT'), userBase + decidedText +
+  ['fitur', constant('PRD_FEATURES_SYSTEM_PROMPT'), userBase + decidedText +
     `\nStack yang ditetapkan (techStack): ${JSON.stringify(['Node.js 22 LTS'])}\n` +
-    'Susun features, databaseSchema, dan apiEndpoints sekarang.', ['features', 'databaseSchema', 'apiEndpoints']],
+    'Susun features sekarang.', ['features']],
+  ['skema', constant('PRD_DB_API_SYSTEM_PROMPT'), userBase + decidedText +
+    `\nStack yang ditetapkan (techStack): ${JSON.stringify(['Node.js 22 LTS'])}\n` +
+    'Susun databaseSchema dan apiEndpoints sekarang.', ['databaseSchema', 'apiEndpoints']],
   ['tasks', constant('PRD_TASKS_SYSTEM_PROMPT'), `Ide: arsip surat untuk 5 petugas\nKerangka PRD tahap 1:\n${JSON.stringify(decided)}\n\nDaftar nama modul: Arsip, Design System\n\nSusun tasks sekarang.`, ['tasks']]
 ];
 
@@ -37,7 +40,7 @@ for (const [tag, sys, user, need] of runs) {
       body: JSON.stringify({
         model,
         messages: [{ role: 'system', content: `${sys}\n\n[ref:${tag}-${Date.now().toString(36)}]` }, { role: 'user', content: user }],
-        temperature: 0.2, max_tokens: 16000, response_format: { type: 'json_object' }
+        temperature: 0.2, max_tokens: 7000, response_format: { type: 'json_object' }
       })
     });
     t = await r.text();
