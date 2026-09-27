@@ -20,7 +20,8 @@ import {
   generatePRDFromPrompt,
   normalizePRDFields,
   stripForeignFragments,
-  validatePRD
+  validatePRD,
+  requiredFeatureCapabilities
 } from '../src/ai-prd.js';
 import { screenKind, productKind } from '../src/preview-screens.js';
 import { buildPreviewHtml } from '../src/preview.js';
@@ -526,6 +527,25 @@ try {
     const result3 = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
     assert.equal(result3.tasks.length, uiTasks.length);
     assert.equal(calls.length, 0, 'PRD lengkap dari cache tidak boleh memanggil router');
+  });
+
+  await test('"notifikasi galat" is an error message, not a notification channel', async () => {
+    // Regresi nyata (live gemini): fitur valid ditolak "tidak punya task untuk
+    // kemampuan yang disebut" hanya karena acceptanceCriteria-nya menyebut
+    // "menampilkan notifikasi galat spesifik" — pesan error UI, bukan kanal.
+    const channels = (f) => requiredFeatureCapabilities(f).map(([, taskRe]) => taskRe.source).join(' ');
+    // Pesan galat UI bukan kanal notifikasi.
+    const errNotice = channels({
+      module: 'Pencatatan Presensi Kelas',
+      description: 'Input kehadiran harian siswa per rombel.',
+      acceptanceCriteria: ['Sistem menolak penyimpanan dan menampilkan notifikasi galat spesifik.']
+    });
+    assert.ok(!/notifikasi|whatsapp/i.test(errNotice), 'notifikasi galat tidak boleh dianggap kanal: ' + errNotice);
+    // Kanal sungguhan tetap terdeteksi.
+    assert.match(channels({ module: 'Pengingat', description: 'Kirim pengingat kehadiran lewat WhatsApp ke orang tua.' }), /whatsapp/i);
+    assert.match(channels({ module: 'Rekap', description: 'Kirim rekap bulanan lewat email ke wali kelas.' }), /email/i);
+    // Ekspor/cetak tetap terdeteksi.
+    assert.match(channels({ module: 'Laporan', description: 'Cetak dan ekspor rekap bulanan ke CSV.' }), /ekspor|cetak/i);
   });
 
   await test('preview picks a screen shape from the module domain, not one generic card', async () => {

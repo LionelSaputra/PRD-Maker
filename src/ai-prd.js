@@ -787,17 +787,22 @@ function taskDependencies(spec) {
   return [...line.matchAll(/\bTASK-\d+\b/gi)].map(match => match[0].toUpperCase());
 }
 
-function requiredFeatureCapabilities(feature) {
+export function requiredFeatureCapabilities(feature) {
   const text = `${feature.module || ''} ${feature.description || ''} ${(feature.acceptanceCriteria || []).join(' ')}`.toLowerCase();
   const rules = [
     [/webhook|callback/, /webhook|callback/],
     [/payment|bayar|qris|midtrans|xendit|stripe|refund|pembayaran/, /payment|bayar|qris|midtrans|xendit|stripe|refund|pembayaran/],
-    [/upload|unggah|storage|berkas|file|gambar|media/, /upload|unggah|storage|berkas|file|gambar|media/],
+    [/upload|unggah|storage|berkas|gambar|media/, /upload|unggah|storage|berkas|gambar|media/],
     [/ekspor|export|impor|import|cetak|print/, /ekspor|export|impor|import|cetak|print/],
-    [/notifikasi|notification|push|whatsapp|telegram|email|sms/, /notifikasi|notification|push|whatsapp|telegram|email|sms/],
+    // Hanya notifikasi KANAL (WA/email/push/SMS), bukan "notifikasi galat" yang
+    // berarti pesan kesalahan di layar. Terukur: fitur valid ditolak validator
+    // hanya karena AC-nya menyebut "menampilkan notifikasi galat spesifik".
+    [/notifikasi(?!\s+galat)|notification|push|whatsapp|telegram|(?:^|\s)email(?:\s|$)|(?:^|\s)sms(?:\s|$)/, /notifikasi|notification|push|whatsapp|telegram|(?:^|\s)email(?:\s|$)|(?:^|\s)sms(?:\s|$)/],
     [/rbac|role|hak akses|multi user|multi-user/, /rbac|role|hak akses|multi user|multi-user/]
   ];
-  return rules.filter(([featurePattern]) => featurePattern.test(text));
+  // "notifikasi galat"/"notifikasi kesalahan" = pesan error UI, bukan kanal.
+  const channelText = text.replace(/notifikasi\s+(?:galat|kesalahan|error|gagal|validasi)/g, 'pesan-galat');
+  return rules.filter(([featurePattern]) => featurePattern.test(channelText));
 }
 
 // Validator: menolak PRD yang tidak lengkap. Pemeriksaan memakai makna dan
