@@ -530,6 +530,31 @@ try {
     assert.equal(calls.length, 0, 'PRD lengkap dari cache tidak boleh memanggil router');
   });
 
+  await test('preview shows the app design only — no task-tracker leftovers', async () => {
+    // Keluhan nyata: preview memuat tabel TASK + status selesai/proses/menunggu
+    // + durasi "3m 12s" dan tombol "Tambah item" generik, sisa dari alat task
+    // tracker lama. Preview harus menampilkan DESAIN aplikasi, bukan daftar task.
+    const ws = { id: 'ws_x', name: 'Absensi', summary: 'Aplikasi absensi siswa. Layar utama: presensi, rekap.', architecture: 'Node + SQLite.' };
+    const features = [
+      { module: 'Design System', description: 'Token warna #0f172a dan aksen #2563eb.', acceptanceCriteria: ['Kontras minimal 4.5:1'], edgeCases: ['Tema gelap tanpa token.'] },
+      { module: 'Pencatatan Presensi Kelas', description: 'Guru mencatat kehadiran per kelas.', acceptanceCriteria: ['Tersimpan satu transaksi'], edgeCases: ['Koneksi putus.'] }
+    ];
+    const tasks = [{ id: 'TASK-01', title: 'Setup database dan seed', spec: 'Tujuan: x' + String.fromCharCode(10) + 'File: src/db.js' }];
+    const html = buildPreviewHtml(ws, features, tasks, {
+      databaseSchema: [{ table: 'presensi', fields: ['id TEXT PRIMARY KEY', 'siswa TEXT', 'status TEXT'] }],
+      apiEndpoints: [{ method: 'GET', path: '/api/v1/presensi', description: 'Daftar' }]
+    });
+    // Jejak task tidak boleh ada sama sekali.
+    assert.ok(!/\bTask\b/.test(html), 'preview tidak boleh menampilkan kata Task');
+    assert.ok(!/\d+m \d+s/.test(html), 'preview tidak boleh menampilkan durasi task');
+    assert.ok(!/Tambah item/.test(html), 'tombol generik harus hilang');
+    assert.ok(!html.includes('TASK-01'), 'judul task tidak boleh muncul');
+    // Yang harus ADA: layar aplikasi + komponen & token, tanpa nilai kosong.
+    assert.ok(html.includes('class="app-window"'), 'layar aplikasi harus ada');
+    assert.ok(html.includes('Komponen & token'), 'panel komponen & token harus ada');
+    assert.ok(!html.includes('undefined'), 'token tidak boleh undefined (warna status wajib ada)');
+  });
+
   await test('a UI PRD must name its screens; a non-UI PRD is exempt', () => {
     // Keluhan nyata: PRD berisi API/data saja tanpa pernah menyebut layar,
     // sehingga preview tidak punya apa pun untuk dirender.

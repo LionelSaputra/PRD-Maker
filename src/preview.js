@@ -9,7 +9,7 @@
 // Sengaja tanpa dependensi: satu fungsi, keluaran HTML mandiri.
 
 import { DESIGN_TEMPLATES, DESIGN_DIRECTIONS } from './design-templates.js';
-import { buildModuleScreen, screenKind, productKind } from './preview-screens.js';
+import { buildModuleScreen, screenKind, productKind, columnsFor, sampleFor } from './preview-screens.js';
 
 const HEX_RE = /#([0-9a-fA-F]{6})\b/g;
 
@@ -71,7 +71,14 @@ function buildThemes(hexes) {
     dark: { bg: '#0b0f17', surface: '#111827', border: '#1f2937', text: '#e5e7eb', muted: '#9ca3af', accent: '#3b82f6' },
     light: { bg: '#ffffff', surface: '#f7f7f9', border: '#e6e6ea', text: '#17171c', muted: '#5d5d69', accent: '#2563eb' }
   };
-  if (hexes.length === 0) return { dark: { ...DEFAULTS.dark }, light: { ...DEFAULTS.light } };
+  // Warna status wajib ada di KEDUA jalur. Dulu cabang tanpa hex hanya
+  // mengembalikan DEFAULTS tanpa done/progress/failed, sehingga swatch
+  // menampilkan "undefined" (terlihat live di preview).
+  const FALLBACK_STATUS = { done: '#16a34a', progress: '#ca8a04', failed: '#dc2626' };
+  if (hexes.length === 0) return {
+    dark: { ...DEFAULTS.dark, ...FALLBACK_STATUS },
+    light: { ...DEFAULTS.light, ...FALLBACK_STATUS }
+  };
 
   // Urutkan dari paling gelap ke paling terang.
   const sorted = [...hexes].sort((a, b) => luminance(a) - luminance(b));
@@ -171,15 +178,19 @@ export function buildPreviewHtml(ws, features, tasks, options = {}) {
   // Untuk portofolio/landing, modul disusun sebagai bagian halaman berurutan
   // (bukan kumpulan kartu aplikasi), sesuai aturan design-taste-frontend.
   const showcase = kind === 'showcase';
-  const taskList = (tasks || []).slice(0, 8);
 
   const ver = (a, b) => contrastRatio(a, b).toFixed(1);
+  // Contoh baris untuk panel palet: diambil dari kolom tabel PRD (bukan task),
+  // supaya panel ini memperlihatkan TAMPILAN data aplikasi.
+  const palettePick = (features || []).find(f => f && !/design system/i.test(f.module || ''));
+  const paletteCols = (columnsFor(palettePick ? palettePick.module : '', databaseSchema) || {}).columns || ['nama', 'status'];
+  const sampleRows = [0, 1, 2].map((i) => paletteCols.slice(0, 3).map((c) => String(sampleFor(c)[i]).slice(0, 22)));
 
   function panel(r, mode) {
     return `
   <section class="panel" data-mode="${mode}">
     <div class="panel-head">
-      <h3>${mode === 'dark' ? 'Mode Gelap' : 'Mode Terang'}</h3>
+      <h3>${mode === 'dark' ? 'Komponen & token — mode gelap' : 'Komponen & token — mode terang'}</h3>
       <span class="verdict">teks vs latar: ${ver(r.text, r.bg)}:1</span>
     </div>
 
@@ -203,28 +214,16 @@ export function buildPreviewHtml(ws, features, tasks, options = {}) {
         <input placeholder="Ketik sesuatu" style="background:${r.surface};border-color:${r.border};color:${r.text}" />
       </label>
 
-      <table class="tbl" style="border-color:${r.border}">
-        <thead>
-          <tr>
-            <th style="color:${r.muted};border-color:${r.border}">Task</th>
-            <th style="color:${r.muted};border-color:${r.border}">Status</th>
-            <th class="num" style="color:${r.muted};border-color:${r.border}">Durasi</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${taskList.map((t, i) => `
-          <tr>
-            <td style="border-color:${r.border}">${esc((t.title || '').slice(0, 46))}</td>
-            <td style="border-color:${r.border}"><span style="color:${[r.done, r.progress, r.muted][i % 3]}">${['selesai','proses','menunggu'][i % 3]}</span></td>
-            <td class="num" style="color:${r.muted};border-color:${r.border}">${(i + 1) * 3}m 12s</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
+      <div class="sample-row" style="border-color:${r.border};background:${r.surface}">
+        ${sampleRows.map(row => `<div class="sample-line">
+          ${row.map((cell, j) => `<span style="${j === 0 ? `color:${r.text};font-weight:600` : `color:${r.muted}`}">${esc(cell)}</span>`).join('')}
+        </div>`).join('')}
+      </div>
 
-      <div class="empty" style="border-color:${r.border};background:${r.surface}">
-        <strong>Belum ada data</strong>
-        <p style="color:${r.muted}">Tidak ada yang perlu ditampilkan. Mulai dengan menambah item pertama.</p>
-        <button class="btn-primary" style="background:${r.accent};color:${onAccent(r)}">Tambah item</button>
+      <div class="states">
+        <span class="state" style="border-color:${r.border};color:${r.muted}">Keadaan kosong</span>
+        <span class="state" style="border-color:${r.border};color:${r.muted}">Sedang memuat</span>
+        <span class="state" style="border-color:${r.border};color:${r.failed}">Gagal: data tidak tersimpan</span>
       </div>
     </div>
 
@@ -370,6 +369,12 @@ export function buildPreviewHtml(ws, features, tasks, options = {}) {
   .panel-head h3{font-size:.95rem;font-weight:650}
   .verdict{font-family:var(--font-mono);font-size:.74rem;color:var(--ink2)}
   .stage{border-radius:8px;padding:20px;display:flex;flex-direction:column;gap:16px}
+  .sample-row{border:1px solid;border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:0}
+  .sample-line{display:flex;gap:14px;padding:8px 0;font-size:.8rem;border-bottom:1px solid #8883}
+  .sample-line:last-child{border-bottom:0}
+  .sample-line span:first-child{min-width:34%}
+  .states{display:flex;gap:8px;flex-wrap:wrap}
+  .state{border:1px dashed;border-radius:6px;padding:6px 10px;font-size:.74rem}
   .stage-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-bottom:12px;border-bottom:1px solid currentColor;border-color:#8884}
   .dot{width:9px;height:9px;border-radius:50%}
   .stage-title{font-weight:650;font-size:.95rem;margin-right:auto}

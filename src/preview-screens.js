@@ -118,8 +118,8 @@ function opsScreen(mod) {
 }
 
 // Ambil nama kolom dari definisi tabel yang cocok dengan kata kunci modul.
-function columnsFor(moduleName, databaseSchema = []) {
-  const words = moduleName.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3);
+export function columnsFor(moduleName, databaseSchema = []) {
+  const words = String((moduleName && moduleName.module) || moduleName || '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3);
   const scored = databaseSchema
     .filter((t) => t && t.table)
     .map((t) => {
@@ -138,7 +138,7 @@ function columnsFor(moduleName, databaseSchema = []) {
 
 // Contoh isi kolom yang masuk akal untuk domain Indonesia, supaya layar tidak
 // menampilkan "lorem ipsum" yang justru dilarang kontrak anti-slop.
-function sampleFor(col) {
+export function sampleFor(col) {
   const c = col.toLowerCase();
   if (/nama|name|siswa|murid|petugas|guru|user|pengguna/.test(c)) return ['Ahmad Fauzi', 'Siti Nurhaliza', 'Budi Santoso', 'Dewi Lestari'];
   if (/kelas|class|rombel|jurusan|prodi/.test(c)) return ['XII RPL 1', 'XI TKJ 2', 'X AKL 1', 'XII RPL 2'];
