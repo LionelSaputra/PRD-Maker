@@ -24,7 +24,7 @@ import {
   requiredFeatureCapabilities,
   hasFilePath
 } from '../src/ai-prd.js';
-import { screenKind, productKind } from '../src/preview-screens.js';
+import { screenKind, productKind, domainKind } from '../src/preview-screens.js';
 import { buildPreviewHtml } from '../src/preview.js';
 import { skeleton as uiSkeleton, tasks as uiTasks, clarification } from './fixtures/prd.js';
 
@@ -530,6 +530,30 @@ try {
     assert.equal(calls.length, 0, 'PRD lengkap dari cache tidak boleh memanggil router');
   });
 
+  await test('preview picks a domain-appropriate screen (draft board, POS), not a generic table', async () => {
+    assert.equal(domainKind('Real-Time Draft Room', 'app'), 'draft');
+    assert.equal(domainKind('Katalog & Matriks Meta Hero', 'app'), 'draft');
+    assert.equal(domainKind('Simulator Pick-Ban Interaktif', 'app'), 'draft');
+    assert.equal(domainKind('Order & Checkout', 'app'), 'pos');
+    assert.equal(domainKind('Pencatatan Presensi Kelas', 'app'), 'roster');
+    assert.equal(domainKind('Arsip Surat Masuk', 'app'), 'archive');
+    // Kata yang mudah salah tangkap (regresi nyata):
+    assert.equal(domainKind('Instant Courier Dispatch', 'app'), 'generic', '"dispatch" bukan "patch"');
+    assert.equal(domainKind('SEO & Metadata', 'app'), 'generic', '"Metadata" bukan "meta" game');
+    assert.equal(domainKind('Hero & Profil', 'showcase'), 'generic', 'hero situs != hero game');
+    assert.equal(domainKind('Deployment (Vercel + VPS)', 'app'), 'generic');
+
+    // Layar draft harus benar-benar jadi draft board, bukan tabel absensi.
+    const ws = { id: 'ws_x', name: 'DraftMind', summary: 'Alat analisis draft MLBB.', architecture: 'Node + SQLite.' };
+    const features = [{ module: 'Real-Time Draft Room', description: 'Ruang draft dua tim dengan ban dan pick.', acceptanceCriteria: ['Sinkron <300ms', 'Slot kosong jelas'], edgeCases: ['Klien putus di tengah draft.'] }];
+    const html = buildPreviewHtml(ws, features, [], { databaseSchema: [{ table: 'drafts', fields: ['id TEXT', 'blue_picks TEXT'] }], apiEndpoints: [] });
+    assert.ok(html.includes('class="draft"'), 'domain draft harus jadi draft board');
+    assert.ok(html.includes('Tim Biru') && html.includes('Tim Merah'), 'draft board butuh dua tim');
+    assert.ok(html.includes('role="timer"'), 'draft board butuh timer');
+    assert.ok(!/Hadir|Izin|Sakit|Alfa/.test(html), 'status absensi tidak boleh muncul di draft board');
+    assert.ok(!/Contoh \d/.test(html), 'tanpa data karangan');
+  });
+
   await test('preview shows the app design only — no task-tracker leftovers', async () => {
     // Keluhan nyata: preview memuat tabel TASK + status selesai/proses/menunggu
     // + durasi "3m 12s" dan tombol "Tambah item" generik, sisa dari alat task
@@ -549,10 +573,15 @@ try {
     assert.ok(!/\d+m \d+s/.test(html), 'preview tidak boleh menampilkan durasi task');
     assert.ok(!/Tambah item/.test(html), 'tombol generik harus hilang');
     assert.ok(!html.includes('TASK-01'), 'judul task tidak boleh muncul');
-    // Yang harus ADA: layar aplikasi + komponen & token, tanpa nilai kosong.
+    // Yang harus ADA: layar aplikasi, tab interaktif, switcher arah, tanpa nilai kosong.
     assert.ok(html.includes('class="app-window"'), 'layar aplikasi harus ada');
-    assert.ok(html.includes('Komponen & token'), 'panel komponen & token harus ada');
+    assert.ok(html.includes('role="tab"'), 'prototype harus punya tab per layar');
+    assert.ok(html.includes('class="sw-btn'), 'prototype harus bisa ganti arah visual');
+    assert.ok(html.includes('toggle-theme'), 'prototype harus punya ganti mode gelap/terang');
     assert.ok(!html.includes('undefined'), 'token tidak boleh undefined (warna status wajib ada)');
+    // Tanpa data karangan: tidak ada baris contoh palsu di dalam layar.
+    assert.ok(!/Contoh \d/.test(html), 'layar tidak boleh memakai data contoh karangan');
+    assert.ok(/Belum ada /.test(html), 'layar kosong harus menampilkan keadaan awal yang benar');
   });
 
   await test('a UI PRD must name its screens; a non-UI PRD is exempt', () => {
@@ -651,11 +680,9 @@ try {
     });
     // Satu layar per modul, bukan satu kartu generik.
     assert.equal((html.match(/class="app-window"/g) || []).length, features.length);
-    // Kolom diambil dari skema PRD, bukan daftar tetap.
-    assert.ok(html.includes('siswa'), 'kolom tabel PRD harus muncul di layar');
-    assert.ok(html.includes('tanggal'));
-    // Aksi utama khusus domain, bukan "Tombol Utama" generik di semua layar.
-    assert.ok(/Simpan Pencatatan/i.test(html), 'tombol layar entri harus menyebut domain');
+    // Modul presensi memakai layar roster (domain absensi), bukan tabel generik.
+    assert.ok(html.includes('Simpan kehadiran'), 'layar absensi harus punya aksi domain');
+    assert.ok(/Hadir/.test(html) && /Alfa/.test(html), 'status kehadiran harus ada di layar absensi');
     assert.ok(!/Tombol Utama/.test(html), 'jangan pakai label tombol generik');
     // Keadaan & aksesibilitas wajib.
     assert.ok(html.includes('prefers-reduced-motion'));

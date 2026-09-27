@@ -9,7 +9,7 @@
 // Sengaja tanpa dependensi: satu fungsi, keluaran HTML mandiri.
 
 import { DESIGN_TEMPLATES, DESIGN_DIRECTIONS } from './design-templates.js';
-import { buildModuleScreen, screenKind, productKind, columnsFor, sampleFor } from './preview-screens.js';
+import { buildModuleScreen, productKind } from './preview-screens.js';
 
 const HEX_RE = /#([0-9a-fA-F]{6})\b/g;
 
@@ -171,68 +171,32 @@ export function buildPreviewHtml(ws, features, tasks, options = {}) {
     edgeCases: f.edgeCases || []
   }));
   const kind = productKind({ features, summary: ws.summary || '', architecture: ws.architecture || '' });
+  const product = kind;
   // Layar contoh per modul: bentuk dipilih dari domain modul + kolom tabel PRD.
   const screens = modules
-    .map(m => buildModuleScreen(m, { databaseSchema, apiEndpoints, theme: D, onAccent: onAccent(D) }))
+    .map((m, i) => buildModuleScreen(m, { databaseSchema, apiEndpoints, theme: D, onAccent: onAccent(D), product, active: i === 0 }))
     .join('\n');
   // Untuk portofolio/landing, modul disusun sebagai bagian halaman berurutan
   // (bukan kumpulan kartu aplikasi), sesuai aturan design-taste-frontend.
   const showcase = kind === 'showcase';
 
   const ver = (a, b) => contrastRatio(a, b).toFixed(1);
-  // Contoh baris untuk panel palet: diambil dari kolom tabel PRD (bukan task),
-  // supaya panel ini memperlihatkan TAMPILAN data aplikasi.
-  const palettePick = (features || []).find(f => f && !/design system/i.test(f.module || ''));
-  const paletteCols = (columnsFor(palettePick ? palettePick.module : '', databaseSchema) || {}).columns || ['nama', 'status'];
-  const sampleRows = [0, 1, 2].map((i) => paletteCols.slice(0, 3).map((c) => String(sampleFor(c)[i]).slice(0, 22)));
 
-  function panel(r, mode) {
-    return `
-  <section class="panel" data-mode="${mode}">
-    <div class="panel-head">
-      <h3>${mode === 'dark' ? 'Komponen & token — mode gelap' : 'Komponen & token — mode terang'}</h3>
-      <span class="verdict">teks vs latar: ${ver(r.text, r.bg)}:1</span>
-    </div>
+  // Prototype: tab per layar + pilih arah visual langsung (tanpa reload halaman).
+  // Panel palet lama dibuang karena duplikat dengan tab "Design System".
+  const navTabs = modules.map((m, i) => `
+    <button class="tab${i === 0 ? ' is-on' : ''}" type="button" role="tab" id="nav-${esc(m.slug)}"
+      aria-selected="${i === 0 ? 'true' : 'false'}" aria-controls="screen-${esc(m.slug)}" data-tab="${esc(m.slug)}">
+      <span class="tab-no">${m.n}</span><span>${esc(m.module)}</span>
+    </button>`).join('');
 
-    <div class="stage" style="background:${r.bg};color:${r.text}">
-      <div class="stage-head">
-        <span class="dot" style="background:${r.accent}"></span>
-        <span class="stage-title">${esc(title)}</span>
-        <span class="badge" style="color:${r.done}">selesai</span>
-        <span class="badge" style="color:${r.progress}">proses</span>
-        <span class="badge" style="color:${r.failed}">gagal</span>
-      </div>
-
-      <div class="row">
-        <button class="btn-primary" style="background:${r.accent};color:${onAccent(r)}">${esc((features[0] && features[0].module) ? 'Tambah ' + features[0].module.split(' ')[0] : 'Aksi utama')}</button>
-        <button class="btn-ghost" style="color:${r.text};border-color:${r.border}">Batal</button>
-        <button class="btn-ghost" disabled style="color:${r.muted};border-color:${r.border}">Nonaktif</button>
-      </div>
-
-      <label class="field">
-        <span style="color:${r.muted}">Nama modul</span>
-        <input placeholder="Ketik sesuatu" style="background:${r.surface};border-color:${r.border};color:${r.text}" />
-      </label>
-
-      <div class="sample-row" style="border-color:${r.border};background:${r.surface}">
-        ${sampleRows.map(row => `<div class="sample-line">
-          ${row.map((cell, j) => `<span style="${j === 0 ? `color:${r.text};font-weight:600` : `color:${r.muted}`}">${esc(cell)}</span>`).join('')}
-        </div>`).join('')}
-      </div>
-
-      <div class="states">
-        <span class="state" style="border-color:${r.border};color:${r.muted}">Keadaan kosong</span>
-        <span class="state" style="border-color:${r.border};color:${r.muted}">Sedang memuat</span>
-        <span class="state" style="border-color:${r.border};color:${r.failed}">Gagal: data tidak tersimpan</span>
-      </div>
-    </div>
-
-    <div class="swatches">
-      ${[['latar', r.bg], ['permukaan', r.surface], ['garis', r.border], ['teks', r.text], ['teks sekunder', r.muted], ['aksen', r.accent], ['selesai', r.done], ['proses', r.progress], ['gagal', r.failed]]
-        .map(([label, c]) => `<div class="sw"><span class="chip" style="background:${c}"></span><code>${c}</code><small>${label}</small></div>`).join('')}
-    </div>
-  </section>`;
-  }
+  const themeSwitcher = (currentId) => DESIGN_TEMPLATES.map((t) => `
+    <button class="sw-btn${t.id === currentId ? ' is-on' : ''}" type="button" data-direction="${esc(t.id)}"
+      aria-pressed="${t.id === currentId ? 'true' : 'false'}"
+      title="${esc(t.name)} — ${esc(t.for)}">
+      <span class="sw-band" style="background:linear-gradient(90deg, ${t.light.bg} 0 34%, ${t.light.surface} 34% 50%, ${t.light.accent} 50% 66%, ${t.light.text} 66% 82%, ${t.light.done} 82% 100%)"></span>
+      <span class="sw-name">${esc(t.name)}</span>
+    </button>`).join('');
 
   // Kartu perbandingan: user lihat semua palet lalu pilih arah yang dipakai.
   // Klik kartu membuka pratinjau lengkap arah itu; tombol "pakai ini" memakai
@@ -364,6 +328,89 @@ export function buildPreviewHtml(ws, features, tasks, options = {}) {
   .chk{width:17px;height:17px;flex:0 0 17px;border-radius:5px;border:1px solid var(--line);display:inline-flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700}
   .chk.ok{color:#047857;border-color:#04785788}
   a.btn-primary,a.btn-ghost{text-decoration:none;display:inline-flex;align-items:center}
+  /* ===== Prototype: tab, switcher, komponen domain ===== */
+  .proto-bar{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+  .proto-nav{display:flex;gap:4px;flex-wrap:wrap}
+  .tab{display:inline-flex;align-items:center;gap:8px;border:1px solid transparent;background:transparent;font:inherit;font-size:.8rem;font-weight:600;color:var(--ink2);padding:8px 12px;border-radius:7px;cursor:pointer;min-height:44px;transition:background 140ms cubic-bezier(.23,1,.32,1)}
+  .tab:hover{background:var(--page);color:var(--ink)}
+  .tab.is-on{background:var(--ink);color:var(--card);border-color:var(--ink)}
+  .tab-no{font-family:var(--font-mono);font-size:.68rem;opacity:.65}
+  .proto-actions{display:flex;gap:10px;align-items:center}
+  .proto-theme{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+  .sw-list{display:flex;gap:6px;flex-wrap:wrap}
+  .sw-btn{border:1px solid var(--line);background:var(--card);border-radius:7px;padding:5px 9px 6px;cursor:pointer;font:inherit;display:flex;flex-direction:column;gap:4px;min-width:104px;min-height:44px;transition:border-color 140ms cubic-bezier(.23,1,.32,1)}
+  .sw-btn:hover{border-color:var(--ink2)}
+  .sw-btn.is-on{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink)}
+  .sw-band{display:block;height:9px;border-radius:4px}
+  .sw-name{font-size:.68rem;color:var(--ink2);font-weight:600;text-align:left;line-height:1.2}
+  .sw-btn.is-on .sw-name{color:var(--ink)}
+  .proto-body.is-showcase{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:0}
+  .proto-body.is-showcase .app-window{border:0;border-bottom:1px solid var(--line);border-radius:0;margin:0}
+  .proto-body.is-showcase .app-window:last-child{border-bottom:0}
+  .proto-body.is-showcase .win-bar{display:none}
+  .app-window{background:var(--card)}
+  .empty{display:flex;flex-direction:column;align-items:flex-start;gap:7px;padding:26px 20px;border:1px dashed var(--line);border-radius:9px;text-align:left}
+  .empty-mark{width:26px;height:26px;border-radius:7px;border:1.5px solid var(--line);position:relative}
+  .empty-mark::after{content:'';position:absolute;inset:7px;border-radius:3px;background:var(--line)}
+  .empty strong{font-size:.88rem}
+  .empty p{color:var(--ink2);font-size:.8rem;max-width:56ch}
+  .tbl-empty td{padding:0;border-top:1px solid var(--line)}
+  .tbl-empty .empty{border:0;border-radius:0}
+  .legend{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+  /* draft board */
+  .draft{display:flex;flex-direction:column;gap:14px}
+  .draft-head{display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:9px;background:var(--page)}
+  .team{display:flex;flex-direction:column;gap:2px}
+  .team-red{align-items:flex-end}
+  .team-name{font-weight:700;font-size:.86rem}
+  .team-meta{font-size:.72rem;color:var(--ink2)}
+  .team-blue .team-name{color:#2563eb}
+  .team-red .team-name{color:#dc2626}
+  .timer{display:flex;flex-direction:column;align-items:center;font-variant-numeric:tabular-nums}
+  .timer b{font-size:1.5rem;letter-spacing:-.02em}
+  .timer span{font-size:.66rem;color:var(--ink2);text-transform:uppercase;letter-spacing:.06em}
+  .draft-rows{display:flex;flex-direction:column;gap:10px}
+  .draft-row{display:flex;gap:12px;align-items:center}
+  .row-label{width:42px;font-size:.74rem;font-weight:700;color:var(--ink2);text-transform:uppercase;letter-spacing:.05em}
+  .slots{display:flex;gap:7px;flex-wrap:wrap}
+  .slot{width:54px;height:54px;border:1px dashed var(--line);border-radius:9px;background:var(--page);display:flex;align-items:center;justify-content:center;position:relative;cursor:pointer;font:inherit;transition:border-color 140ms cubic-bezier(.23,1,.32,1)}
+  .slot:hover{border-color:var(--ink2)}
+  .slot-no{position:absolute;top:3px;left:6px;font-family:var(--font-mono);font-size:.6rem;color:var(--ink2)}
+  .slot-x{font-size:1.1rem;color:var(--ink2)}
+  .draft-pool .pool-head{display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-bottom:9px}
+  /* pos */
+  .pos{display:grid;grid-template-columns:1fr 240px;gap:14px}
+  @media (max-width:720px){.pos{grid-template-columns:1fr}}
+  .pos-sum{display:flex;flex-direction:column;gap:7px;padding:14px;border:1px solid var(--line);border-radius:9px;background:var(--page)}
+  .pos-total{font-size:1.5rem;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  /* arsip */
+  .split{display:grid;grid-template-columns:1fr 260px;gap:14px}
+  @media (max-width:720px){.split{grid-template-columns:1fr}}
+  .split-side{padding:14px;border:1px solid var(--line);border-radius:9px;background:var(--page);display:flex;flex-direction:column;gap:9px}
+  .detail-rows{display:flex;flex-direction:column;gap:7px;font-size:.8rem}
+  .detail-rows div{display:flex;justify-content:space-between;gap:10px}
+  .detail-rows span{color:var(--ink2)}
+  .detail-rows em{font-style:normal;color:var(--ink2)}
+  .checklist button.chk{border:1px solid var(--line);background:var(--card);width:19px;height:19px;flex:0 0 19px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
+  .checklist button.chk[aria-pressed="true"]{background:var(--ink);border-color:var(--ink)}
+  .checklist button.chk[aria-pressed="true"] span::after{content:'✓';color:var(--card);font-size:.72rem;font-weight:700}
+  /* tipografi lebih matang */
+  .page-head-sm h3{letter-spacing:-.015em}
+  .tbl th{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em}
+  .btn-primary{box-shadow:0 1px 2px #00000014}
+  .btn-primary:active{transform:translateY(.5px)}
+  @media (hover:hover) and (pointer:fine){.btn-ghost:hover{border-color:var(--ink2);color:var(--ink)}}
+  /* Mode gelap prototype: membalik token halaman, bukan warna komponen. */
+  :root[data-theme="dark"]{--page:#0e1116;--card:#161a21;--line:#262c36;--ink:#e7eaf0;--ink2:#9aa4b2}
+  :root[data-theme="dark"] .tab.is-on{background:var(--ink);color:#0e1116;border-color:var(--ink)}
+  :root[data-theme="dark"] .win-bar{background:#12161c}
+  :root[data-theme="dark"] .empty-mark{border-color:#39414d}
+  :root[data-theme="dark"] .empty-mark::after{background:#39414d}
+  :root[data-theme="dark"] .pill.ok{color:#4ade80;border-color:#4ade8055;background:#4ade8014}
+  :root[data-theme="dark"] .pill.warn{color:#fbbf24;border-color:#fbbf2455;background:#fbbf2414}
+  :root[data-theme="dark"] .pill.bad{color:#f87171;border-color:#f8717155;background:#f8717114}
+  :root[data-theme="dark"] .team-blue .team-name{color:#60a5fa}
+  :root[data-theme="dark"] .team-red .team-name{color:#f87171}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
   .panel-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:14px;flex-wrap:wrap}
   .panel-head h3{font-size:.95rem;font-weight:650}
@@ -434,30 +481,84 @@ export function buildPreviewHtml(ws, features, tasks, options = {}) {
   ${direction ? `<div class="note">Pratinjau arah <strong>${esc(direction.name)}</strong> (${esc(direction.for)}). Halaman ini belum memakai PRD: hanya palet, tipografi, dan bentuk komponen dari arah tersebut. Arah yang dipakai PRD ada di bawah.</div>` : ''}
   ${!direction && !ds ? '<div class="note">PRD ini belum punya modul Design System, jadi halaman ini memakai palet bawaan. Regenerate PRD-nya supaya paletnya ikut.</div>' : ''}
 
-  ${panel(L, 'light')}
-  ${panel(D, 'dark')}
+
 
   ${options.compare ? compareSection(options.compareId) : ''}
 
-  <section class="panel">
-    <div class="panel-head"><h3>${showcase ? 'Susunan halaman contoh' : 'Layar contoh per modul'}</h3><span class="verdict">${modules.length} ${showcase ? 'bagian' : 'layar'}, data contoh dari skema PRD</span></div>
-    <p class="verdict" style="margin:0 0 14px">${showcase
-      ? 'Bagian halaman disusun berurutan seperti situs jadi: pembuka, bukti, lalu kontak. Isi diambil dari modul dan data PRD, bukan teks contoh generik.'
-      : 'Bentuk tiap layar dipilih dari domain modulnya (daftar, entri, laporan, pencarian, akun, atau token), dan kolomnya diambil dari tabel di PRD.'} Ini contoh tampilan, bukan aplikasi jadi.</p>
-    ${screens}
-  </section>
-
-  <section class="panel">
-    <div class="panel-head"><h3>Modul dalam PRD</h3><span class="verdict">${modules.length} modul</span></div>
-    <div class="mods">
-      ${modules.map(m => `<div class="mod"><b>${m.n}</b>${esc(m.module)}</div>`).join('')}
+  <section class="panel proto">
+    <div class="proto-bar">
+      <div class="proto-nav" role="tablist" aria-label="Layar ${esc(title)}">${navTabs}</div>
+      <div class="proto-actions">
+        <span class="verdict">${modules.length} layar</span>
+        <button class="btn-ghost" type="button" id="toggle-theme">Mode gelap</button>
+      </div>
     </div>
+    <div class="proto-theme">
+      <span class="verdict">Arah visual</span>
+      <div class="sw-list">${themeSwitcher(options.direction)}</div>
+      <span class="hint" id="theme-note">Klik untuk melihat arah lain pada prototype ini; pilihan tersimpan di workspace ini.</span>
+    </div>
+    <div class="proto-body ${showcase ? 'is-showcase' : ''}" id="proto-body">
+      ${screens}
+    </div>
+    <p class="hint">Prototype dari data PRD, bukan aplikasi jadi. Layar mengikuti domain modul; isi sengaja kosong dengan keadaan awal yang benar.</p>
   </section>
-
-  <footer class="page-foot">
-    Contoh ini dibuat dari data PRD, bukan aplikasi jadi. Palet diambil dari modul Design System sehingga bisa dipakai untuk memeriksa hasil sebelum AI membangun aplikasinya.
-  </footer>
 </div>
+
+<script>
+(() => {
+  const body = document.getElementById('proto-body');
+  const tabs = [...document.querySelectorAll('.tab')];
+  const panes = [...body.querySelectorAll('.app-window')];
+  const show = (slug) => {
+    panes.forEach((p) => { p.hidden = p.dataset.screen !== slug; });
+    tabs.forEach((t) => {
+      const on = t.dataset.tab === slug;
+      t.classList.toggle('is-on', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+  };
+  tabs.forEach((t) => t.addEventListener('click', () => show(t.dataset.tab)));
+  if (panes[0]) show(panes[0].dataset.screen);
+  // Panah kiri/kanan untuk berpindah layar (keyboard, tanpa mouse).
+  document.querySelector('.proto-nav')?.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    const i = tabs.findIndex((t) => t.classList.contains('is-on'));
+    const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+    if (next) { next.focus(); show(next.dataset.tab); }
+  });
+
+  // Ganti arah visual LANGSUNG: muat ulang halaman dengan ?direction=<id> lalu
+  // pertahankan layar yang sedang dibuka. Pilihan disimpan ke workspace lewat
+  // POST supaya task berikutnya memakai arah ini.
+  const current = new URLSearchParams(location.search).get('direction');
+  document.querySelectorAll('.sw-btn').forEach((b) => b.addEventListener('click', async () => {
+    const id = b.dataset.direction;
+    document.querySelectorAll('.sw-btn').forEach((x) => { x.classList.toggle('is-on', x === b); x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+    const open = (tabs.find((t) => t.classList.contains('is-on')) || {}).dataset?.tab;
+    try {
+      await fetch('preview/direction', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'direction=' + encodeURIComponent(id) });
+    } catch {}
+    const u = new URL(location.href);
+    u.searchParams.set('direction', id);
+    if (!current) u.searchParams.delete('compare');
+    if (open) u.hash = 'screen-' + open;
+    location.href = u.toString();
+  }));
+
+  // Mode gelap/terang: membalik seluruh prototype tanpa perlu PRD baru.
+  const btn = document.getElementById('toggle-theme');
+  const apply = (dark) => {
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    if (btn) btn.textContent = dark ? 'Mode terang' : 'Mode gelap';
+    try { localStorage.setItem('prd-theme', dark ? 'dark' : 'light'); } catch {}
+  };
+  let dark = false;
+  try { dark = localStorage.getItem('prd-theme') === 'dark'; } catch {}
+  apply(dark);
+  btn?.addEventListener('click', () => { dark = !dark; apply(dark); });
+})();
+</script>
 </body>
 </html>`;
 }

@@ -345,8 +345,10 @@ const server = http.createServer(async (req, res) => {
       const hit = DESIGN_DIRECTIONS.find(d => d.id === body.direction);
       if (!hit) return sendJson(res, 400, { error: 'Arah visual tidak dikenal.' });
       db.prepare('UPDATE workspaces SET design_direction = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(hit.id, wsId);
-      // 303 supaya browser kembali ke GET dan tidak mengulang POST.
-      res.writeHead(303, { Location: `/api/v1/workspaces/${wsId}/preview?compare=1&direction=${encodeURIComponent(hit.id)}`, 'Cache-Control': 'no-store' });
+      // 303 supaya browser kembali ke GET dan tidak mengulang POST. Jangan
+      // paksa compare=1: prototype memanggil endpoint ini untuk GANTI ARAH di
+      // tempat, jadi jawabannya harus tetap halaman prototype.
+      res.writeHead(303, { Location: `/api/v1/workspaces/${wsId}/preview?direction=${encodeURIComponent(hit.id)}`, 'Cache-Control': 'no-store' });
       return res.end();
     }
 
