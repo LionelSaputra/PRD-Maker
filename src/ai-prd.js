@@ -599,7 +599,8 @@ Keluarkan HANYA JSON dengan tepat tiga kunci:
 
 Isi summary dengan: tujuan, pengguna utama, metrik terukur (atau usulan), asumsi, ukuran/skala sebagai kalimat natural ("tiga pengguna", bukan hanya label), dan hal yang sengaja di luar lingkup.
 WAJIB mengakhiri summary dengan kalimat yang diawali PERSIS frasa "Di luar lingkup:" lalu daftar hal yang sengaja tidak dikerjakan. Contoh: "Di luar lingkup: unggah berkas, pembayaran, dan notifikasi realtime." Ini diperiksa otomatis; tanpa frasa itu PRD ditolak.
-Deteksi CLI/bot/API/library tanpa UI dari brief dan nyatakan itu. Jangan mengarang metrik, dependency, atau integrasi luar kebutuhan.
+Setelah daftar "Di luar lingkup:", tambahkan SATU paragraf yang diawali PERSIS "Layar utama:" lalu sebutkan layar/bagian antarmuka yang akan dibangun beserta tugas utamanya, dipisah koma. Contoh: "Layar utama: masuk, pencatatan presensi per kelas, rekap bulanan wali kelas, pengelolaan akun dan data siswa." Ini dipakai untuk memverifikasi bahwa PRD benar-benar merancang antarmuka, bukan hanya API.
+Deteksi CLI/bot/API/library tanpa UI dari brief dan nyatakan itu; untuk kasus itu tulis "Layar utama: tidak berlaku (tanpa antarmuka)". Jangan mengarang metrik, dependency, atau integrasi luar kebutuhan.
 
 Jangan menulis field lain. Jangan menulis catatan, rencana, atau markdown. Langsung JSON dan tutup dengan }.
 `;
@@ -610,7 +611,9 @@ Jangan menulis field lain. Jangan menulis catatan, rencana, atau markdown. Langs
 const PRD_CORE_SYSTEM_PROMPT = `
 Kamu Principal Software Architect & Lead Engineer. Bahasa Indonesia tegas, tanpa marketing.
 
-PILIH TEKNOLOGI dari kebutuhan, bukan dari kebiasaan. Deteksi CLI/bot/API/library tanpa UI dari brief; jangan menambahkan frontend, login, atau Design System untuk kasus itu. Pilih stack berdasarkan realtime/offline, perangkat, data, konkurensi, dan skala. Skala dari klarifikasi harus terlihat sebagai ukuran natural. Kelebihan teknologi untuk aplikasi kecil adalah cacat.
+PILIH TEKNOLOGI dari kebutuhan, bukan dari kebiasaan. JANGAN memakai setelan default yang sama untuk semua aplikasi (Next.js + PostgreSQL + Prisma + NextAuth + Tailwind) kecuali kebutuhan memang menuntutnya; menyebut ulang stack itu tanpa alasan konkret adalah kesalahan. Untuk aplikasi satu kantor, satu sekolah, satu tim kecil, atau skala ratusan baris data, SQLite (node:sqlite/better-sqlite3) LEBIH TEPAT daripada PostgreSQL, dan server-rendered HTML/Express LEBIH TEPAT daripada SPA bila layarnya berupa daftar dan formulir. Pakai PostgreSQL/Prisma hanya bila ada bukti: banyak penulis bersamaan, data relasional besar, atau kebutuhan hosting terkelola.
+Deteksi CLI/bot/API/library tanpa UI dari brief; jangan menambahkan frontend, login, atau Design System untuk kasus itu. Pilih stack berdasarkan realtime/offline, perangkat, data, konkurensi, dan skala. Skala dari klarifikasi harus terlihat sebagai ukuran natural. Kelebihan teknologi untuk aplikasi kecil adalah cacat.
+Setiap entri techStack ditulis "Teknologi — alasan untuk aplikasi INI", bukan sekadar nama. Bila memilih sesuatu yang lazim, alasan itu wajib merujuk detail brief (jumlah pengguna, volume data, atau alur kerja), bukan "populer" atau "modern".
 
 Keluarkan HANYA JSON dengan tepat dua kunci:
 {
@@ -682,7 +685,7 @@ Kamu adalah Lead Engineer. Tugasmu: dari kerangka PRD (JSON) + ide + klarifikasi
 ATURAN:
 1. COVERAGE EKSPLISIT: setiap modul features wajib punya task dengan field module persis sama. Setiap integrasi, webhook/callback, ekspor/impor, notifikasi, auth/RBAC, upload, cetak, pembayaran/refund, dan UI yang benar-benar ada wajib punya task implementasi; bila ada webhook, buat task penerimaan terpisah; integrasi juga wajib punya verifikasi sandbox/alur sukses dan gagal. Bot/CLI/API/library tanpa UI tidak boleh mendapat task frontend, login, atau design system.
 2. SATU TASK = SATU PEKERJAAN TERBUKTI. Task boleh digabung bila terkait kuat, tetapi setiap task harus punya file path konkret, logic + error handling, dan bukti. Jangan memakai task generik seperti "buat backend" atau "testing".
-3. UKURAN SESUAI SKALA. Jangan memaksa 8-15 task: gunakan jumlah secukupnya. Project kecil boleh 3-5 task; project besar dipecah per endpoint, layar, integrasi, atau lapisan. Tetap sertakan pondasi, tiap coverage wajib, E2E alur utama, dan production readiness bila relevan.
+3. JUMLAH TASK MENGIKUTI PEKERJAAN, BUKAN ANGKA BULAT. Hitung dari isi PRD, jangan mengejar angka kecil. Cakupan yang WAJIB ada (masing-masing minimal satu task): (a) skema database + migrasi/seed, (b) setiap modul fitur yang punya antarmuka, (c) setiap endpoint yang perlu logika non-trivial atau otorisasi, (d) setiap integrasi pihak ketiga (plus verifikasi sandbox serta alur gagal), (e) alur utama end-to-end, (f) production readiness (konfigurasi, observability, backup, atau checklist rilis). Yang boleh DIGABUNG hanya pekerjaan yang benar-benar satu berkas atau satu langkah; yang TIDAK boleh digabung: auth, integrasi eksternal, ekspor/impor, dan layar dengan logika sendiri. Untuk aplikasi biasa (5-8 modul, 10-20 endpoint) target alaminya 10-18 task; aplikasi sangat kecil 5-8 task. Jangan pernah menulis jumlah task sebagai alasan memangkas cakupan.
 4. module tiap task WAJIB nama modul dari features. Tabel dan endpoint harus muncul persis dalam spec task penanggung jawab.
 5. spec WAJIB memakai TEMPLATE berikut PERSIS (label dalam huruf tebal, urutan sama). Salin tujuh baris ini; jangan meringkas atau menghilangkan label:
    Tujuan: <apa yang dicapai>
@@ -694,6 +697,7 @@ ATURAN:
    Verifikasi: <perintah atau langkah uji>
    ID unik TASK-01, TASK-02, dst (huruf besar, dua digit). Dependensi hanya boleh menunjuk task sebelumnya.
 6. Salin keputusan keamanan, a11y, desain, dan out-of-scope dari kerangka ke langkah kerja serta bukti. Untuk UI buktikan keyboard/focus/reader, kontras, failure/empty state, responsif, dan reduced-motion. Jangan menambah motion, dependency, atau fitur yang tidak diperlukan.
+7. LAYAR ADALAH PEKERJAAN NYATA. Setiap modul yang punya antarmuka wajib punya task yang membangun LAYAR-nya (berkas HTML/screen/komponen + state kosong/gagal/loading + perilaku mobile), bukan hanya endpoint-nya. Sebut nama layar yang dibangun pada baris Tujuan (mis. "layar pencatatan presensi") dan berkas layarnya pada baris File. Bila kerangka punya modul Design System, satu task terpisah wajib menetapkan token dan komponen dasarnya (tombol, tabel, form, badge status) sebelum layar lain memakainya.
 
 Keluarkan HANYA JSON murni tanpa markdown:
 {
@@ -814,6 +818,20 @@ export function requiredFeatureCapabilities(feature) {
   return rules.filter(([featurePattern]) => featurePattern.test(channelText));
 }
 
+// Bukti bahwa PRD benar-benar merancang antarmuka: menyebut layar/halaman yang
+// dibangun, atau DAFTAR berkas antarmuka konkret. Menerima gaya bahasa apa pun
+// (model kadang menulis "Layar utama:", kadang menyebut ".html" di fitur).
+function hasScreenEvidence(prd) {
+  const summary = String(prd.summary || '');
+  const features = Array.isArray(prd.features) ? prd.features : [];
+  const text = [summary, ...features.map(f => `${f && f.module} ${f && f.description}`)].join(' ').toLowerCase();
+  if (/layar utama\s*:/.test(text)) return true;
+  if (/(?:^|[\s,;])(?:layar|halaman|screen|page)\b/.test(text)) return true;
+  // Berkas antarmuka konkret juga bukti (index.html, presensi.html, page.tsx).
+  if (/\.(?:html|tsx|jsx|vue|svelte)\b/.test(text)) return true;
+  return false;
+}
+
 // Validator: menolak PRD yang tidak lengkap. Pemeriksaan memakai makna dan
 // relasi antar-field, bukan label prosa tertentu, agar variasi ejaan model
 // tidak memicu penolakan palsu.
@@ -838,6 +856,11 @@ export function validatePRD(prd, stage = 'full') {
   if (!hasScaleEvidence(prd)) problems.push('summary/architecture tidak menjelaskan skala atau volume');
   if (!hasOutOfScopeEvidence(prd)) problems.push('ringkasan tidak menjelaskan batas lingkup');
   if (!hasSecurityEvidence(prd)) problems.push('arsitektur tidak memuat kontrol keamanan atau validasi input yang relevan');
+  // Aplikasi berUI wajib menyebut LAYAR-nya di ringkasan, bukan hanya API/data.
+  // Tanpa pemeriksaan ini, PRD bisa lolos tanpa pernah merancang antarmuka.
+  if (!skeletonStage && hasUIRequirement(prd) && !hasScreenEvidence(prd)) {
+    problems.push('ringkasan belum menyebut layar/antarmuka yang dibangun');
+  }
   if (architecture && !/(?:karena|alasan|reason|reasoning|memilih|dipilih|menggunakan|digunakan|pakai|choose|chosen|select|selected|because)\b/i.test(architecture)) problems.push('architectureOverview tidak menjelaskan alasan pilihan teknologi');
   if (architecture && !/(?:ditolak|tidak dipilih|dihindari|bukan|alternatif|rejected|avoid|avoided|instead)\b/i.test(architecture)) problems.push('architectureOverview tidak menjelaskan alternatif yang ditolak');
 
@@ -1477,9 +1500,12 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
       `Daftar nama modul (pakai persis untuk field "module"): ${modules.join(', ')}\n\n`;
     // Hint pemadatan khusus tasks: spec adalah bagian terpanjang dan yang
     // paling sering menembus plafon 7000 token.
-    const tasksHint = 'Maksimal 7 task. Setiap spec maksimal 130 kata: tetap memuat ketujuh label ' +
+    // Jangan batasi jumlah task: ia memotong project besar. Yang dijaga hanya
+    // PANJANG TIAP SPEC (penyebab keluaran terpotong di plafon token), bukan
+    // jumlahnya. Jumlah mengikuti rule 3: per endpoint, layar, integrasi, lapisan.
+    const tasksHint = 'Setiap spec maksimal 150 kata: tetap memuat ketujuh label ' +
       '(Tujuan, File, Dependensi, Implementasi, Error/edge case, Kriteria selesai, Verifikasi) ' +
-      'tapi tiap label satu kalimat pendek. title maksimal 10 kata.';
+      'tapi tiap label satu-dua kalimat pendek. title maksimal 10 kata.';
     let tasksRes = await callWithTruncationRetry(
       tasksSystemPrompt,
       context + 'Susun tasks sekarang.',

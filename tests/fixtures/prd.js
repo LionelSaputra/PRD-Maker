@@ -1,6 +1,6 @@
 export const skeleton = {
   projectName: 'Arsip Surat', tagline: 'Arsip kantor kecil',
-  summary: 'Website arsip surat untuk 5 petugas kantor. Tujuan: pencarian surat berdasarkan nomor. Metrik usulan: temukan surat dalam 30 detik. Asumsi: login melalui sesi kantor. Skala: kecil, 500 surat per bulan. Di luar lingkup: pembayaran dan aplikasi mobile native.',
+  summary: 'Website arsip surat untuk 5 petugas kantor. Tujuan: pencarian surat berdasarkan nomor. Metrik usulan: temukan surat dalam 30 detik. Asumsi: login melalui sesi kantor. Skala: kecil, 500 surat per bulan. Di luar lingkup: pembayaran dan aplikasi mobile native. Layar utama: masuk, daftar arsip, form tambah surat.',
   techStack: ['Node.js', 'SQLite', 'HTML CSS'],
   architectureOverview: 'Keputusan teknologi: Node.js monolith dan SQLite untuk lima petugas. PostgreSQL ditolak karena belum memerlukan banyak penulis bersamaan. Browser memakai HTTPS ke API dengan otorisasi server-side; secret di environment. Backup harian diverifikasi dengan restore. UI berupa daftar surat, form dan pencarian.',
   features: [

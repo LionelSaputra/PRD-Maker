@@ -530,6 +530,30 @@ try {
     assert.equal(calls.length, 0, 'PRD lengkap dari cache tidak boleh memanggil router');
   });
 
+  await test('a UI PRD must name its screens; a non-UI PRD is exempt', () => {
+    // Keluhan nyata: PRD berisi API/data saja tanpa pernah menyebut layar,
+    // sehingga preview tidak punya apa pun untuk dirender.
+    const ui = structuredClone(validUI);
+    ui.summary = 'Website arsip surat untuk 5 petugas. Skala kecil, 500 surat/bulan. Di luar lingkup: pembayaran.';
+    assert.ok(validatePRD(ui).some(p => /layar/i.test(p)), 'PRD berUI tanpa layar harus ditolak');
+
+    // "Layar utama:" memenuhi syarat.
+    ui.summary += ' Layar utama: masuk, daftar arsip, form tambah surat.';
+    assert.ok(!validatePRD(ui).some(p => /layar/i.test(p)), 'menyebut layar harus lolos');
+
+    // Berkas antarmuka konkret juga bukti.
+    const byFile = structuredClone(validUI);
+    byFile.summary = 'Website arsip surat untuk 5 petugas, halaman public/arsip.html. Skala kecil, 500 surat/bulan. Di luar lingkup: pembayaran.';
+    assert.ok(!validatePRD(byFile).some(p => /layar/i.test(p)), 'berkas .html harus dianggap bukti layar');
+
+    // CLI tanpa UI tidak wajib menyebut layar.
+    const cli = structuredClone(validUI);
+    cli.summary = 'CLI impor CSV tanpa antarmuka untuk 2 operator. Skala kecil, 500 baris. Di luar lingkup: web dan database server.';
+    cli.features = [{ module: 'Impor CSV', description: 'Baca CSV dan tulis ke SQLite lokal.', userStories: ['Sebagai operator saya mengimpor berkas.'], acceptanceCriteria: ['Baris tidak valid dilaporkan.'], edgeCases: ['Berkas kosong.'] }];
+    cli.tasks = uiTasks;
+    assert.ok(!validatePRD(cli).some(p => /layar/i.test(p)), 'CLI tanpa UI tidak wajib menyebut layar');
+  });
+
   await test('file-path check accepts real paths and rejects vague ones', () => {
     // Terukur live (gemini): validator menolak "task TASK-02 tidak menyebut file
     // path konkret" padahal model menulis path sah. Regex lama hanya menerima
@@ -803,8 +827,11 @@ try {
     // 7 panggilan: identitas, stack, fitur, db, api, tasks(potong), tasks(retry).
     assert.equal(calls.length, 7);
     const retry = calls[6].body.messages[1].content;
-    assert.match(retry, /Maksimal 7 task/i);
+    // Hint tasks menjaga PANJANG TIAP SPEC, bukan jumlah task (membatasi jumlah
+    // memotong cakupan project besar — keluhan nyata pengguna).
+    assert.match(retry, /spec maksimal 150 kata/i);
     assert.match(retry, /terpotong/i);
+    assert.doesNotMatch(retry, /Maksimal 7 task/i);
     assert.doesNotMatch(retry, /architectureOverview maksimal 250 kata/);
   });
 
