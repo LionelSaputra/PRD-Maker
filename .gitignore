@@ -35,3 +35,6 @@ Thumbs.db
 # Cache
 .npm/
 .cache/
+
+# Cache tahap PRD (resume antar-run) — data runtime, jangan di-commit
+data/stage-cache/
