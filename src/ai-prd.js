@@ -686,7 +686,7 @@ ATURAN:
 4. module tiap task WAJIB nama modul dari features. Tabel dan endpoint harus muncul persis dalam spec task penanggung jawab.
 5. spec WAJIB memakai TEMPLATE berikut PERSIS (label dalam huruf tebal, urutan sama). Salin tujuh baris ini; jangan meringkas atau menghilangkan label:
    Tujuan: <apa yang dicapai>
-   File: <path konkret, mis. src/db.js>
+   File: <path konkret dengan ekstensi atau nama file nyata, mis. src/db.js, public/rekap.html, Dockerfile. Jangan menulis nama folder saja, dan jangan menaruh path di baris lain.>
    Dependensi: <TASK-xx atau "tidak ada">
    Implementasi: <langkah logis>
    Error/edge case: <penanganan gagal>
@@ -762,8 +762,17 @@ function hasSecurityEvidence(prd) {
   return /validasi|validation|sanitize|otorisasi|authorization|auth|rbac|secret|rahasia|credential|https|tls|rate limit|input|jaringan|server.side/i.test(text);
 }
 
-function hasFilePath(spec) {
-  return /\b(?:file|path)\s*:\s*[^\n]*(?:^|[\s`])[\w.-]+(?:\/[\w.-]+)+\.(?:js|ts|tsx|jsx|py|go|rs|java|kt|sql|css|html|json|yaml|yml|md|sh)\b|(?:^|[\s`])[\w.-]+(?:\/[\w.-]+)+\.(?:js|ts|tsx|jsx|py|go|rs|java|kt|sql|css|html|json|yaml|yml|md|sh)\b/i.test(spec);
+export function hasFilePath(spec) {
+  const EXT = 'js|ts|tsx|jsx|py|go|rs|java|kt|sql|css|html|json|yaml|yml|md|sh|txt|env|toml|ini|vue|svelte|php|rb|cs|c|cpp|h';
+  // Path ber-ekstensi di mana pun (mis. src/db.js, public/css/design-system.css).
+  if (new RegExp(`(?:^|[\\s\`'"(])[\\w.-]+(?:/[\\w.-]+)+\\.(?:${EXT})\\b`, 'i').test(spec)) return true;
+  // File tanpa ekstensi yang lazim (Dockerfile, Makefile, README, .env, dll).
+  if (/(?:^|[\s`'"(])(?:Dockerfile|Makefile|Procfile|README|LICENSE|CHANGELOG|\.gitignore|\.env(?:\.\w+)?|docker-compose\.ya?ml)\b/i.test(spec)) return true;
+  // Path ber-slash tanpa ekstensi (mis. app/(dash)/page, pages/api/rekap) ATAU
+  // label File:/Path: diikuti path ber-slash. Gemini kadang menulis path Next.js
+  // App Router tanpa ekstensi.
+  if (/\b(?:file|path)\s*:\s*[^\n]*[\w.-]+\/[\w.()\[\]-]+/i.test(spec)) return true;
+  return false;
 }
 
 function hasDependencyValue(spec) {
@@ -1494,7 +1503,30 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
         parsed = candidate;
         problems = retryProblems;
       } else {
-        console.warn('[AI-PRD] Perbaikan tasks tidak memperbaiki; memakai hasil pertama.');
+        console.warn('[AI-PRD] Perbaikan tasks tidak memperbaiki; mencoba sekali lagi dengan instruksi eksplisit.');
+        // Terukur live (gemini): validator menolak "task TASK-02 tidak menyebut
+        // file path konkret", tetapi model tidak tahu apa yang kurang karena
+        // pesan itu tidak menjelaskan bentuk file path yang diterima. Percobaan
+        // ketiga menyebut ATURAN bentuk path + task yang bermasalah, bukan hanya
+        // mengulang masalah. Hanya dipakai kalau benar-benar mengurangi masalah.
+        const fileIssues = problems.filter(p => /file path/i.test(p));
+        const explicit = fileIssues.length
+          ? `\nATURAN FILE PATH yang diterima validator: baris "File:" WAJIB memuat path nyata yang mengandung garis miring dan nama berkas, mis. src/db.js, public/rekap.html, src/routes/auth.js, atau Dockerfile. Nama folder saja ("src", "halaman rekap") DITOLAK. `
+            + `Task yang bermasalah: ${fileIssues.map(p => (p.match(/TASK-\d+/i) || [''])[0]).filter(Boolean).join(', ') || 'lihat daftar'}. Perbaiki HANYA baris File: pada task itu, jangan ubah task lain.`
+          : '';
+        const thirdRes = await callWithTruncationRetry(
+          tasksSystemPrompt,
+          context + `Perbaiki tasks. Jangan mengubah kerangka. Masalah: ${problems.join('; ')}${explicit}`,
+          tasksHint
+        );
+        const third = normalizePRDFields({ ...skeleton, tasks: Array.isArray(thirdRes?.tasks) ? thirdRes.tasks : [] });
+        const thirdProblems = validatePRD(third);
+        if (thirdProblems.length < problems.length) {
+          parsed = third;
+          problems = thirdProblems;
+        } else {
+          console.warn('[AI-PRD] Perbaikan tasks tetap tidak memperbaiki; memakai hasil terbaik.');
+        }
       }
     }
     if (problems.length) throw validationError('tasks', problems);

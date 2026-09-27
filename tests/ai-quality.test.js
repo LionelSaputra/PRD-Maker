@@ -21,7 +21,8 @@ import {
   normalizePRDFields,
   stripForeignFragments,
   validatePRD,
-  requiredFeatureCapabilities
+  requiredFeatureCapabilities,
+  hasFilePath
 } from '../src/ai-prd.js';
 import { screenKind, productKind } from '../src/preview-screens.js';
 import { buildPreviewHtml } from '../src/preview.js';
@@ -527,6 +528,27 @@ try {
     const result3 = await generatePRDFromPrompt('Arsip surat', 'Arsip Surat', [], 'oa/gpt-6-astra');
     assert.equal(result3.tasks.length, uiTasks.length);
     assert.equal(calls.length, 0, 'PRD lengkap dari cache tidak boleh memanggil router');
+  });
+
+  await test('file-path check accepts real paths and rejects vague ones', () => {
+    // Terukur live (gemini): validator menolak "task TASK-02 tidak menyebut file
+    // path konkret" padahal model menulis path sah. Regex lama hanya menerima
+    // path ber-ekstensi, sehingga Dockerfile / .env / path App Router ditolak.
+    for (const ok of [
+      'File: src/db.js',
+      'File: public/css/design-system.css, src/routes/auth.js',
+      'File: Dockerfile',
+      'File: .env.local',
+      'File: app/(dash)/page',
+      'File: README',
+      'Implementasi: buat komponen di src/components/Table.tsx'
+    ]) assert.ok(hasFilePath(ok), 'harus diterima: ' + ok);
+    for (const bad of [
+      'File: halaman rekap',
+      'File: folder src',
+      'Implementasi: buat backend dan testing.',
+      'Tujuan: x. File: -'
+    ]) assert.ok(!hasFilePath(bad), 'harus ditolak: ' + bad);
   });
 
   await test('"notifikasi galat" is an error message, not a notification channel', async () => {
