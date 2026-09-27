@@ -360,7 +360,7 @@ try {
     assert.deepEqual(result.features.map(f => f.module), uiSkeleton.features.map(f => f.module));
     assert.equal(result.tasks.length, uiTasks.length);
     // Fitur/skema sudah benar, jadi tidak boleh ada panggilan perbaikan rincian.
-    assert.ok(!calls.some(c => /Perbaiki features/i.test(c.body.messages[1].content)));
+    assert.ok(!calls.some(c => /Perbaiki fitur/i.test(c.body.messages[1].content)));
     assert.ok(!calls.some(c => /Perbaiki databaseSchema/i.test(c.body.messages[1].content)));
   });
 
@@ -963,7 +963,7 @@ try {
     // kontrak API, repair-features, tasks(buruk), tasks-retry.
     assert.equal(calls.length, 8);
     assert.match(calls[0].body.messages[1].content, /projectName, tagline, summary/i);
-    assert.match(calls[5].body.messages[1].content, /Perbaiki features/i);
+    assert.match(calls[5].body.messages[1].content, /Perbaiki fitur/i);
     assert.match(calls[6].body.messages[1].content, /tahap 1/iu);
     assert.match(calls[7].body.messages[1].content, /Perbaiki tasks/i);
     assert.ok(calls.every(call => call.body.model === 'oa/gpt-6-astra'));

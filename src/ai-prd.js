@@ -546,7 +546,7 @@ Struktur JSON:
       "description": "Deskripsi fungsional lengkap",
       "userStories": ["Sebagai [role], saya ingin [tindakan] sehingga [manfaat]"],
       "acceptanceCriteria": ["Kriteria penerimaan spesifik yang bisa diuji, bukan kalimat umum"],
-      "edgeCases": ["Kasus ekstrem / error yang harus ditangani"]
+      "edgeCases": ["Kasus ekstrem / error yang harus ditangani, minimal satu berisi alur GAGAL nyata"]
     }
   ],
   "databaseSchema": [
@@ -647,7 +647,8 @@ Keluarkan HANYA JSON dengan tepat satu kunci:
 }
 
 3-6 modul fitur. Jangan menulis kunci lain. Jangan berhenti sebelum JSON ditutup. Keluaran terpotong = gagal.
-`;
+
+WAJIB: setiap fitur punya minimal 2 acceptanceCriteria, dan salah satunya menyebut ALUR GAGAL (mis. "ditolak 403", "validasi gagal", "nomor duplikat ditolak 409"). Sertakan juga edgeCases berisi minimal satu kasus gagal. Fitur dengan acceptanceCriteria yang hanya menggambarkan jalur sukses akan DITOLAK otomatis.`;
 
 // Tahap 1d dulu menulis databaseSchema DAN apiEndpoints sekaligus, dan itu
 // titik gagal terukur luna: satu generasi ~4300 token menggantung >249 detik
@@ -1395,12 +1396,32 @@ export async function generatePRDFromPrompt(userIdea, name, clarifications = [],
 
         let candidate = { ...detail };
         if (featureProblems.length) {
+          // Perbaikan harus MEMBAWA fitur yang bermasalah. Terukur live: prompt
+          // lama hanya mengirim pesan masalah ("fitur X perlu alur gagal") tanpa
+          // data fiturnya, sehingga model mengarang ulang seluruh daftar dan
+          // hasilnya selalu dinilai "tidak memperbaiki" -> skeleton dibuang.
+          const offending = (candidate.features || []).filter((f) => {
+            const name = String((f && f.module) || '');
+            return featureProblems.some((p) => p.includes(name));
+          });
+          const payload = (offending.length ? offending : candidate.features || []).map((f) => ({
+            module: f && f.module,
+            description: f && f.description,
+            userStories: (f && f.userStories) || [],
+            acceptanceCriteria: (f && f.acceptanceCriteria) || [],
+            edgeCases: (f && f.edgeCases) || []
+          }));
           const fixedF = normalizePRDFields(await callWithTruncationRetry(
             PRD_FEATURES_SYSTEM_PROMPT + '\n' + getDesignSystemRequirement(),
             userPrompt + decidedText +
             `\nStack yang ditetapkan: ${JSON.stringify(prose.techStack)}\n` +
-            `Perbaiki features berikut. Jangan mengubah identitas, arsitektur, skema, atau endpoint.\n` +
-            `Masalah: ${featureProblems.join('; ')}`
+            `Perbaiki fitur berikut. KEMBALIKAN SELURUH daftar fitur, tetapi hanya ubah fitur yang bermasalah; ` +
+            `fitur lain disalin persis. Jangan mengubah identitas, arsitektur, skema, atau endpoint.\n` +
+            `Fitur yang harus diperbaiki:\n${JSON.stringify(payload)}\n` +
+            `Masalah: ${featureProblems.join('; ')}\n` +
+            'Setiap fitur WAJIB punya minimal 2 acceptanceCriteria, dan minimal satu di antaranya menyebut ALUR GAGAL ' +
+            '(kata seperti ditolak/gagal/validasi/error/409/403) ATAU punya edgeCases berisi kasus gagal. ' +
+            'Jangan mengubah nama module.'
           ));
           // Hasil perbaikan bisa LEBIH BURUK (fitur tanpa nama modul). Hanya
           // dipakai kalau benar-benar mengurangi jumlah masalah.
